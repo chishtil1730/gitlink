@@ -14,32 +14,34 @@ struct AccessTokenResponse {
     access_token: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct GitHubUser {
     login: String,
+    name: Option<String>,
+    public_repos: u32,
 }
 
-
+#[derive(Debug, Deserialize)]
+struct Repo {
+    name: String,
+    private: bool,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1️⃣ Load credentials
     let client_id = env::var("GITLINK_CLIENT_ID")
         .expect("GITLINK_CLIENT_ID not set");
     let client_secret = env::var("GITLINK_CLIENT_SECRET")
         .expect("GITLINK_CLIENT_SECRET not set");
 
-    // 2️⃣ Channel to receive OAuth code
     let (tx, rx) = mpsc::channel();
 
-    // 3️⃣ Start local callback server
     thread::spawn(move || {
-        let server =
-            Server::http(CALLBACK_ADDR).expect("Failed to start callback server");
+        let server = Server::http(CALLBACK_ADDR)
+            .expect("Failed to start callback server");
 
         for request in server.incoming_requests() {
             if request.url().starts_with(CALLBACK_PATH) {
-                // FIX: own the URL string
                 let url = request.url().to_string();
 
                 let code = url
@@ -53,14 +55,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 let _ = request.respond(response);
-
                 let _ = tx.send(code.to_string());
                 break;
             }
         }
     });
 
-    // 4️⃣ Open browser to GitHub OAuth
     let auth_url = format!(
         "https://github.com/login/oauth/authorize?client_id={}&redirect_uri=http://{}{}&scope=read:user repo",
         client_id, CALLBACK_ADDR, CALLBACK_PATH
@@ -71,10 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     that(auth_url)?;
 
-    // 5️⃣ Wait for authorization code
     let code = rx.recv().expect("Failed to receive OAuth code");
 
-    // 6️⃣ Exchange code for access token
     let client = Client::new();
 
     let token_response: AccessTokenResponse = client
@@ -92,17 +90,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let token = token_response.access_token;
 
-    // 7️⃣ Fetch GitHub user (dummy data)
-    let user: GitHubUser = client
+    let user = fetch_user(&client, &token).await?;
+    println!(
+        "\nUser Info:\n- Username: {}\n- Name: {}\n- Public repos: {}\n",
+        user.login,
+        user.name.unwrap_or_else(|| "N/A".into()),
+        user.public_repos
+    );
+
+    let repos = fetch_repos(&client, &token).await?;
+    println!("Repositories:");
+    for repo in repos {
+        println!(
+            "- {} ({})",
+            repo.name,
+            if repo.private { "private" } else { "public" }
+        );
+    }
+
+    Ok(())
+}
+
+async fn fetch_user(
+    client: &Client,
+    token: &str,
+) -> Result<GitHubUser, reqwest::Error> {
+    client
         .get("https://api.github.com/user")
         .header("Authorization", format!("Bearer {}", token))
         .header("User-Agent", "gitlink")
         .send()
         .await?
-        .json()
-        .await?;
+        .json::<GitHubUser>()
+        .await
+}
 
-    println!("Authenticated as: {}", user.login);
-
-    Ok(())
+async fn fetch_repos(
+    client: &Client,
+    token: &str,
+) -> Result<Vec<Repo>, reqwest::Error> {
+    client
+        .get("https://api.github.com/user/repos")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "gitlink")
+        .send()
+        .await?
+        .json::<Vec<Repo>>()
+        .await
 }
