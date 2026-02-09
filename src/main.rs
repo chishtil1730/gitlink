@@ -1,9 +1,10 @@
 mod auth;
+mod github;
 
-use std::error::Error;
 use auth::oauth;
-use reqwest::Client;
+use github::client::GitHubClient;
 use serde::Deserialize;
+use std::error::Error;
 
 #[derive(Debug, Deserialize)]
 struct GitHubUser {
@@ -19,19 +20,21 @@ struct Repo {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     // OAuth login
     let token = oauth::login().await?;
 
-    let client = Client::new();
+    // Create GitHub client abstraction
+    let gh = GitHubClient::new(token);
 
-    get_raw_info(&token, &client).await?;
+    // Fetch and print data
+    get_raw_info(&gh).await?;
 
     Ok(())
 }
 
-async fn get_raw_info(token: &String, client: &Client) -> Result<(), Box<dyn Error>> {
-    let user = fetch_user(&client, &token).await?;
+async fn get_raw_info(gh: &GitHubClient) -> Result<(), Box<dyn Error>> {
+    let user = fetch_user(gh).await?;
     println!(
         "\nUser Info:\n- Username: {}\n- Name: {}\n- Public repos: {}\n",
         user.login,
@@ -39,7 +42,7 @@ async fn get_raw_info(token: &String, client: &Client) -> Result<(), Box<dyn Err
         user.public_repos
     );
 
-    let repos = fetch_repos(&client, &token).await?;
+    let repos = fetch_repos(gh).await?;
     println!("Repositories:");
     for repo in repos {
         println!(
@@ -48,16 +51,16 @@ async fn get_raw_info(token: &String, client: &Client) -> Result<(), Box<dyn Err
             if repo.private { "private" } else { "public" }
         );
     }
+
     Ok(())
 }
 
 async fn fetch_user(
-    client: &Client,
-    token: &str,
+    gh: &GitHubClient,
 ) -> Result<GitHubUser, reqwest::Error> {
-    client
+    gh.client()
         .get("https://api.github.com/user")
-        .header("Authorization", format!("Bearer {}", token))
+        .header("Authorization", gh.auth_header())
         .header("User-Agent", "gitlink")
         .send()
         .await?
@@ -66,12 +69,11 @@ async fn fetch_user(
 }
 
 async fn fetch_repos(
-    client: &Client,
-    token: &str,
+    gh: &GitHubClient,
 ) -> Result<Vec<Repo>, reqwest::Error> {
-    client
+    gh.client()
         .get("https://api.github.com/user/repos")
-        .header("Authorization", format!("Bearer {}", token))
+        .header("Authorization", gh.auth_header())
         .header("User-Agent", "gitlink")
         .send()
         .await?
