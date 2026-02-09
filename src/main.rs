@@ -21,8 +21,32 @@ struct Repo {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    //Deleting the token that is persisted:
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.len() >= 3 && args[1] == "auth" && args[2] == "logout" {
+        auth::token_store::delete_token()?;
+        println!("Logged out from GitHub");
+        return Ok(());
+    }
+
+
     // OAuth login
-    let token = oauth::login().await?;
+    //Persistent token by auth/token_store
+    use auth::token_store;
+
+    let token = match token_store::load_token() {
+        Ok(token) => {
+            println!("Using stored GitHub token");
+            token
+        }
+        Err(_) => {
+            let token = oauth::login().await?;
+            token_store::save_token(&token)?;
+            token
+        }
+    };
+
 
     // Create GitHub client abstraction
     let gh = GitHubClient::new(token);
@@ -70,13 +94,22 @@ async fn fetch_user(
 
 async fn fetch_repos(
     gh: &GitHubClient,
-) -> Result<Vec<Repo>, reqwest::Error> {
-    gh.client()
-        .get("https://api.github.com/user/repos")
+) -> Result<Vec<Repo>, Box<dyn std::error::Error>> {
+    let response = gh
+        .client()
+        .get("https://api.github.com/user/repos?per_page=100")
         .header("Authorization", gh.auth_header())
         .header("User-Agent", "gitlink")
+        .header("Accept", "application/vnd.github+json")
         .send()
-        .await?
-        .json::<Vec<Repo>>()
-        .await
+        .await?;
+
+    // 👇 IMPORTANT: check status first
+    if !response.status().is_success() {
+        let text = response.text().await?;
+        return Err(format!("GitHub API error: {}", text).into());
+    }
+
+    let repos = response.json::<Vec<Repo>>().await?;
+    Ok(repos)
 }
