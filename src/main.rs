@@ -1,5 +1,6 @@
 mod auth;
 
+use std::error::Error;
 use auth::oauth;
 use reqwest::Client;
 use serde::Deserialize;
@@ -24,6 +25,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::new();
 
+    get_raw_info(&token, &client).await?;
+
+    Ok(())
+}
+
+async fn get_raw_info(token: &String, client: &Client) -> Result<(), Box<dyn Error>> {
     let user = fetch_user(&client, &token).await?;
     println!(
         "\nUser Info:\n- Username: {}\n- Name: {}\n- Public repos: {}\n",
@@ -41,7 +48,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if repo.private { "private" } else { "public" }
         );
     }
-
     Ok(())
 }
 
