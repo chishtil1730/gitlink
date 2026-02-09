@@ -13,11 +13,14 @@ struct GitHubUser {
     public_repos: u32,
 }
 
-#[derive(Debug, Deserialize)]
+use serde::{ Serialize};
+
+#[derive(Debug, Deserialize, Serialize)]
 struct Repo {
     name: String,
     private: bool,
 }
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -92,9 +95,22 @@ async fn fetch_user(
         .await
 }
 
+use std::fs;
+use std::time::Duration;
+use crate::github::cache;
+
 async fn fetch_repos(
     gh: &GitHubClient,
 ) -> Result<Vec<Repo>, Box<dyn std::error::Error>> {
+    let cache_file = cache::cache_path("repos");
+    let ttl = Duration::from_secs(60);
+
+    if cache::is_cache_valid(&cache_file, ttl) {
+        let data = fs::read_to_string(&cache_file)?;
+        let repos = serde_json::from_str(&data)?;
+        return Ok(repos);
+    }
+
     let response = gh
         .client()
         .get("https://api.github.com/user/repos?per_page=100")
@@ -104,12 +120,10 @@ async fn fetch_repos(
         .send()
         .await?;
 
-    // 👇 IMPORTANT: check status first
-    if !response.status().is_success() {
-        let text = response.text().await?;
-        return Err(format!("GitHub API error: {}", text).into());
-    }
-
     let repos = response.json::<Vec<Repo>>().await?;
+
+    fs::write(&cache_file, serde_json::to_string(&repos)?)?;
+
     Ok(repos)
 }
+
