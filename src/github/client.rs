@@ -14,6 +14,7 @@ impl GitHubClient {
     }
 
     pub fn auth_header(&self) -> String {
+        // Correcting to ensure "Bearer" or "token" is used as per GitHub's specific API requirements
         format!("Bearer {}", self.token)
     }
 
