@@ -1,6 +1,6 @@
 use crate::github::graphql::{fetch_repositories, GraphQLClient, RepositoryInfo};
+use dialoguer::{theme::ColorfulTheme, MultiSelect, Select};
 use std::error::Error;
-use std::io::{self, Write};
 
 /// Interactive repository selector
 pub struct RepoSelector {
@@ -18,7 +18,7 @@ impl RepoSelector {
         })
     }
 
-    /// Display repositories and let user select one
+    /// Display repositories and let user select one using arrow keys
     pub fn select_repository(&self) -> Result<Option<&RepositoryInfo>, Box<dyn Error>> {
         if self.repos.is_empty() {
             println!("No repositories found.");
@@ -28,51 +28,34 @@ impl RepoSelector {
         println!("\n📂 Your GitHub Repositories:");
         println!("{}", "=".repeat(80));
 
-        for (idx, repo) in self.repos.iter().enumerate() {
-            let privacy = if repo.is_private { "🔒 Private" } else { "🌍 Public" };
-            let desc = repo
-                .description
-                .as_deref()
-                .unwrap_or("No description");
+        // Create display items for the menu
+        let items: Vec<String> = self
+            .repos
+            .iter()
+            .map(|repo| {
+                let privacy = if repo.is_private { "🔒" } else { "🌍" };
+                let desc = repo
+                    .description
+                    .as_deref()
+                    .unwrap_or("No description");
 
-            println!(
-                "{:3}. {} {} - {}",
-                idx + 1,
-                repo.name_with_owner,
-                privacy,
-                desc
-            );
+                format!("{} {} - {}", privacy, repo.name_with_owner, desc)
+            })
+            .collect();
 
-            // Show last updated
-            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&repo.updated_at) {
-                println!("     └─ Last updated: {}", dt.format("%Y-%m-%d %H:%M"));
-            }
-        }
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select a repository (ESC to cancel)")
+            .items(&items)
+            .default(0)
+            .interact_opt()?;
 
-        println!("{}", "=".repeat(80));
-        print!("\n🎯 Select a repository (1-{}) or 'q' to quit: ", self.repos.len());
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            return Ok(None);
-        }
-
-        match input.parse::<usize>() {
-            Ok(num) if num > 0 && num <= self.repos.len() => {
-                Ok(Some(&self.repos[num - 1]))
-            }
-            _ => {
-                println!("❌ Invalid selection. Please try again.");
-                self.select_repository()
-            }
+        match selection {
+            Some(idx) => Ok(Some(&self.repos[idx])),
+            None => Ok(None),
         }
     }
 
-    /// Select multiple repositories
+    /// Select multiple repositories using arrow keys and space to toggle
     pub fn select_multiple(&self) -> Result<Vec<&RepositoryInfo>, Box<dyn Error>> {
         if self.repos.is_empty() {
             println!("No repositories found.");
@@ -82,64 +65,34 @@ impl RepoSelector {
         println!("\n📂 Your GitHub Repositories:");
         println!("{}", "=".repeat(80));
 
-        for (idx, repo) in self.repos.iter().enumerate() {
-            let privacy = if repo.is_private { "🔒 Private" } else { "🌍 Public" };
-            let desc = repo
-                .description
-                .as_deref()
-                .unwrap_or("No description");
+        // Create display items for the menu
+        let items: Vec<String> = self
+            .repos
+            .iter()
+            .map(|repo| {
+                let privacy = if repo.is_private { "🔒" } else { "🌍" };
+                let desc = repo
+                    .description
+                    .as_deref()
+                    .unwrap_or("No description");
 
-            println!(
-                "{:3}. {} {} - {}",
-                idx + 1,
-                repo.name_with_owner,
-                privacy,
-                desc
-            );
-        }
-
-        println!("{}", "=".repeat(80));
-        println!("\n🎯 Select repositories (comma-separated, e.g., '1,3,5') or 'all': ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("all") {
-            return Ok(self.repos.iter().collect());
-        }
-
-        let indices: Result<Vec<usize>, _> = input
-            .split(',')
-            .map(|s| s.trim().parse::<usize>())
+                format!("{} {} - {}", privacy, repo.name_with_owner, desc)
+            })
             .collect();
 
-        match indices {
-            Ok(nums) => {
-                let selected: Vec<&RepositoryInfo> = nums
-                    .iter()
-                    .filter_map(|&num| {
-                        if num > 0 && num <= self.repos.len() {
-                            Some(&self.repos[num - 1])
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+        println!("Use arrow keys to navigate, SPACE to select/deselect, ENTER to confirm");
 
-                if selected.is_empty() {
-                    println!("❌ No valid selections. Please try again.");
-                    self.select_multiple()
-                } else {
-                    Ok(selected)
-                }
-            }
-            Err(_) => {
-                println!("❌ Invalid input. Please try again.");
-                self.select_multiple()
-            }
-        }
+        let selections = MultiSelect::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select repositories")
+            .items(&items)
+            .interact()?;
+
+        let selected: Vec<&RepositoryInfo> = selections
+            .iter()
+            .map(|&idx| &self.repos[idx])
+            .collect();
+
+        Ok(selected)
     }
 
     /// Filter repositories by search term

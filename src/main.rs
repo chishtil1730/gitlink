@@ -2,6 +2,7 @@ mod auth;
 mod github;
 
 use auth::oauth;
+use dialoguer::{theme::ColorfulTheme, Select};
 use github::client::GitHubClient;
 use github::graphql::{self, GraphQLClient};
 use github::repo_selector::RepoSelector;
@@ -57,19 +58,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Display main menu
     loop {
-        display_menu();
+        let choice = display_menu()?;
 
-        let mut choice = String::new();
-        io::stdin().read_line(&mut choice)?;
-
-        match choice.trim() {
-            "1" => show_user_activity(&graphql_client).await?,
-            "2" => show_recent_commits(&graphql_client).await?,
-            "3" => show_pull_requests(&graphql_client).await?,
-            "4" => select_and_check_repo(&graphql_client).await?,
-            "5" => check_multiple_repos(&graphql_client).await?,
-            "6" => show_basic_info(&gh_client).await?,
-            "q" | "Q" => {
+        match choice {
+            0 => show_user_activity(&graphql_client).await?,
+            1 => show_recent_commits(&graphql_client).await?,
+            2 => show_pull_requests(&graphql_client).await?,
+            3 => select_and_check_repo(&graphql_client).await?,
+            4 => check_multiple_repos(&graphql_client).await?,
+            5 => show_basic_info(&gh_client).await?,
+            6 => {
                 println!("👋 Goodbye!");
                 break;
             }
@@ -80,20 +78,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn display_menu() {
+fn display_menu() -> Result<usize, Box<dyn Error>> {
     println!("\n{}", "=".repeat(80));
     println!("🚀 GitLink - Your Terminal Git Companion");
     println!("{}", "=".repeat(80));
-    println!("1. 📊 Show User Activity & Contributions");
-    println!("2. 💾 Show Recent Commits");
-    println!("3. 🔀 Show Pull Requests");
-    println!("4. 🔍 Select Repository & Check Sync");
-    println!("5. 📦 Check Multiple Repositories Sync");
-    println!("6. 👤 Show Basic User Info (REST API)");
-    println!("Q. Quit");
-    println!("{}", "=".repeat(80));
-    print!("Enter your choice: ");
-    io::stdout().flush().unwrap();
+
+    let items = vec![
+        "📊 Show User Activity & Contributions",
+        "💾 Show Recent Commits",
+        "🔀 Show Pull Requests",
+        "🔍 Select Repository & Check Sync",
+        "📦 Check Multiple Repositories Sync",
+        "👤 Show Basic User Info (REST API)",
+        "❌ Quit",
+    ];
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Choose an option")
+        .items(&items)
+        .default(0)
+        .interact()?;
+
+    Ok(selection)
 }
 
 async fn show_user_activity(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
@@ -174,16 +180,17 @@ async fn show_recent_commits(client: &GraphQLClient) -> Result<(), Box<dyn Error
 async fn show_pull_requests(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
     println!("\n🔀 Fetching your pull requests...");
 
-    print!("Choose state (1: Open, 2: Closed, 3: Merged): ");
-    io::stdout().flush()?;
+    let states = vec!["Open", "Closed", "Merged"];
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Choose PR state")
+        .items(&states)
+        .default(0)
+        .interact()?;
 
-    let mut choice = String::new();
-    io::stdin().read_line(&mut choice)?;
-
-    let state = match choice.trim() {
-        "1" => "OPEN",
-        "2" => "CLOSED",
-        "3" => "MERGED",
+    let state = match selection {
+        0 => "OPEN",
+        1 => "CLOSED",
+        2 => "MERGED",
         _ => "OPEN",
     };
 
@@ -231,13 +238,14 @@ async fn select_and_check_repo(client: &GraphQLClient) -> Result<(), Box<dyn Err
         sync_checker.display_sync_status(repo).await?;
 
         // Offer to show more details
-        print!("\n🔍 Show detailed remote info? (y/n): ");
-        io::stdout().flush()?;
+        let options = vec!["Yes", "No"];
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Show detailed remote info?")
+            .items(&options)
+            .default(1)
+            .interact()?;
 
-        let mut response = String::new();
-        io::stdin().read_line(&mut response)?;
-
-        if response.trim().eq_ignore_ascii_case("y") {
+        if selection == 0 {
             show_repo_details(client, repo).await?;
         }
     }
