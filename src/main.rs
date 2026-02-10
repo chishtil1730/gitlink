@@ -3,8 +3,10 @@ mod github;
 
 use auth::oauth;
 use dialoguer::{theme::ColorfulTheme, Select};
+use github::actions_client::{ActionsClient, display_workflow_runs};
 use github::client::GitHubClient;
 use github::graphql::{self, GraphQLClient};
+use github::push_checker::display_push_status;
 use github::repo_selector::RepoSelector;
 use github::sync_checker::SyncChecker;
 use serde::Deserialize;
@@ -66,8 +68,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             2 => show_pull_requests(&graphql_client).await?,
             3 => select_and_check_repo(&graphql_client).await?,
             4 => check_multiple_repos(&graphql_client).await?,
-            5 => show_basic_info(&gh_client).await?,
-            6 => {
+            5 => check_push_status(&graphql_client).await?,
+            6 => verify_push_possible(&graphql_client).await?,
+            7 => show_branches(&graphql_client).await?,
+            8 => show_issues_and_actions(&graphql_client, &token).await?,
+            9 => show_basic_info(&gh_client).await?,
+            10 => {
                 println!("👋 Goodbye!");
                 break;
             }
@@ -89,6 +95,10 @@ fn display_menu() -> Result<usize, Box<dyn Error>> {
         "🔀 Show Pull Requests",
         "🔍 Select Repository & Check Sync",
         "📦 Check Multiple Repositories Sync",
+        "✅ Check if Latest Commit is Pushed to Remote",
+        "🚀 Verify if Pushing is Possible",
+        "🌿 Show Branches (Local & Remote)",
+        "📝 Show Issues & GitHub Actions",
         "👤 Show Basic User Info (REST API)",
         "❌ Quit",
     ];
@@ -136,10 +146,8 @@ async fn show_user_activity(client: &GraphQLClient) -> Result<(), Box<dyn Error>
 }
 
 async fn show_recent_commits(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
-    // Option 1: Select a specific repository
-    // Option 2: Show 3 most recent commits across all repos
     let options = vec![
-        "Show 3 most recent commits (across all repos)",
+        "Show 3 most recent commits (globally across all repos)",
         "Select a specific repository",
     ];
 
@@ -151,12 +159,12 @@ async fn show_recent_commits(client: &GraphQLClient) -> Result<(), Box<dyn Error
 
     match selection {
         0 => {
-            // Show 3 most recent commits across all repos
-            println!("\n💾 Fetching your 3 most recent commits...");
-            let commits = graphql::fetch_recent_commits(client, 1).await?;
+            // Show TRUE 3 most recent commits globally
+            println!("\n💾 Fetching your 3 most recent commits globally...");
+            let commits = graphql::fetch_recent_commits(client, 3).await?;
 
             println!("\n{}", "=".repeat(80));
-            println!("3 Most Recent Commits by {}", commits.viewer.login);
+            println!("3 Most Recent Commits Globally by {}", commits.viewer.login);
             println!("{}", "=".repeat(80));
 
             let mut all_commits = Vec::new();
@@ -170,10 +178,10 @@ async fn show_recent_commits(client: &GraphQLClient) -> Result<(), Box<dyn Error
                 }
             }
 
-            // Sort by date (most recent first)
+            // Sort by committed date (most recent first) - this gives us TRUE global order
             all_commits.sort_by(|a, b| b.1.committed_date.cmp(&a.1.committed_date));
 
-            // Take only first 3
+            // Take only first 3 - these are the TRUE 3 latest commits globally
             for (repo, commit) in all_commits.iter().take(3) {
                 println!("\n📦 Repository: {}", repo.name_with_owner);
 
@@ -203,7 +211,6 @@ async fn show_recent_commits(client: &GraphQLClient) -> Result<(), Box<dyn Error
             if let Some(repo) = selector.select_repository()? {
                 println!("\n💾 Fetching commits from {}...", repo.name_with_owner);
 
-                // Fetch commits for this specific repo
                 let commit_data = graphql::fetch_single_repo_commits(
                     client,
                     &repo.owner.login,
@@ -299,14 +306,12 @@ async fn select_and_check_repo(client: &GraphQLClient) -> Result<(), Box<dyn Err
     if let Some(repo) = selector.select_repository()? {
         println!("\n✅ Selected: {}", repo.name_with_owner);
 
-        // Create sync checker and check the selected repo
         let sync_checker = SyncChecker::new(GraphQLClient::new(
             auth::token_store::load_token()?
         ));
 
         sync_checker.display_sync_status(repo).await?;
 
-        // Offer to show more details
         let options = vec!["Yes", "No"];
         let selection = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("Show detailed remote info?")
@@ -334,6 +339,293 @@ async fn check_multiple_repos(client: &GraphQLClient) -> Result<(), Box<dyn Erro
         ));
 
         sync_checker.display_multi_sync_status(&repos).await?;
+    }
+
+    Ok(())
+}
+
+async fn check_push_status(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
+    let selector = RepoSelector::new(client).await?;
+
+    if let Some(repo) = selector.select_repository()? {
+        println!("\n🔄 Checking push status for {}...", repo.name_with_owner);
+
+        let branch = if let Some(branch_ref) = &repo.default_branch_ref {
+            &branch_ref.name
+        } else {
+            println!("❌ No default branch found");
+            return Ok(());
+        };
+
+        let status = client.check_push_status(
+            &repo.owner.login,
+            &repo.name,
+            branch
+        ).await?;
+
+        display_push_status(&status);
+    }
+
+    Ok(())
+}
+
+async fn verify_push_possible(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
+    let selector = RepoSelector::new(client).await?;
+
+    if let Some(repo) = selector.select_repository()? {
+        println!("\n🚀 Verifying push possibility for {}...", repo.name_with_owner);
+
+        let branch = if let Some(branch_ref) = &repo.default_branch_ref {
+            &branch_ref.name
+        } else {
+            println!("❌ No default branch found");
+            return Ok(());
+        };
+
+        let status = client.verify_push_possible(
+            &repo.owner.login,
+            &repo.name,
+            branch
+        ).await?;
+
+        display_push_status(&status);
+
+        if status.can_push {
+            println!("\n✅ You can safely push to this branch!");
+        } else {
+            println!("\n⚠️  Action required before pushing:");
+            if status.remote_ahead {
+                println!("   • Pull remote changes first");
+            }
+            if status.has_conflicts {
+                println!("   • Resolve merge conflicts");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn show_branches(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
+    let selector = RepoSelector::new(client).await?;
+
+    if let Some(repo) = selector.select_repository()? {
+        println!("\n🌿 Fetching branches for {}...", repo.name_with_owner);
+
+        let branches = graphql::fetch_branches(
+            client,
+            &repo.owner.login,
+            &repo.name
+        ).await?;
+
+        println!("\n{}", "=".repeat(80));
+        println!("Branches - {} (Total: {})",
+                 branches.repository.name_with_owner,
+                 branches.repository.refs.total_count);
+        println!("{}", "=".repeat(80));
+
+        for branch in &branches.repository.refs.nodes {
+            println!("\n🌿 {}", branch.name);
+            println!("   Commit: {}", &branch.target.oid[..8]);
+
+            if let Some(date) = &branch.target.committed_date {
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date) {
+                    println!("   Last commit: {}", dt.format("%Y-%m-%d %H:%M:%S"));
+                }
+            }
+
+            if let Some(author) = &branch.target.author {
+                if let Some(name) = &author.name {
+                    println!("   Author: {}", name);
+                }
+            }
+
+            println!("{}", "─".repeat(80));
+        }
+
+        println!();
+    }
+
+    Ok(())
+}
+
+async fn show_issues_and_actions(client: &GraphQLClient, token: &str) -> Result<(), Box<dyn Error>> {
+    let options = vec![
+        "Show Issues",
+        "Show GitHub Actions Workflow Runs",
+    ];
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Choose what to view")
+        .items(&options)
+        .default(0)
+        .interact()?;
+
+    match selection {
+        0 => show_issues_menu(client).await?,
+        1 => show_actions_menu(client, token).await?,
+        _ => {}
+    }
+
+    Ok(())
+}
+
+async fn show_issues_menu(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
+    let scope_options = vec![
+        "All my issues across repos",
+        "Issues in a specific repository",
+    ];
+
+    let scope = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Choose scope")
+        .items(&scope_options)
+        .default(0)
+        .interact()?;
+
+    let state_options = vec!["Open", "Closed", "Both"];
+    let state_selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Choose issue state")
+        .items(&state_options)
+        .default(0)
+        .interact()?;
+
+    let states = match state_selection {
+        0 => vec!["OPEN"],
+        1 => vec!["CLOSED"],
+        2 => vec!["OPEN", "CLOSED"],
+        _ => vec!["OPEN"],
+    };
+
+    match scope {
+        0 => {
+            println!("\n📝 Fetching your issues...");
+            let issues = graphql::fetch_user_issues(client, &states, 20).await?;
+
+            println!("\n{}", "=".repeat(80));
+            println!("Issues - Total: {}", issues.viewer.issues.total_count);
+            println!("{}", "=".repeat(80));
+
+            for issue in &issues.viewer.issues.nodes {
+                println!("\n📝 #{} - {}", issue.number, issue.title);
+                println!("   State: {}", issue.state);
+
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&issue.created_at) {
+                    println!("   Created: {}", dt.format("%Y-%m-%d"));
+                }
+
+                if let Some(author) = &issue.author {
+                    println!("   Author: {}", author.login);
+                }
+
+                println!("   🔗 {}", issue.url);
+                println!("{}", "─".repeat(80));
+            }
+        }
+        1 => {
+            let selector = RepoSelector::new(client).await?;
+
+            if let Some(repo) = selector.select_repository()? {
+                println!("\n📝 Fetching issues from {}...", repo.name_with_owner);
+
+                let issues = graphql::fetch_issues(
+                    client,
+                    &repo.owner.login,
+                    &repo.name,
+                    &states,
+                    20
+                ).await?;
+
+                println!("\n{}", "=".repeat(80));
+                println!("Issues - {} (Total: {})",
+                         issues.repository.name_with_owner,
+                         issues.repository.issues.total_count);
+                println!("{}", "=".repeat(80));
+
+                for issue in &issues.repository.issues.nodes {
+                    println!("\n📝 #{} - {}", issue.number, issue.title);
+                    println!("   State: {}", issue.state);
+
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&issue.created_at) {
+                        println!("   Created: {}", dt.format("%Y-%m-%d"));
+                    }
+
+                    if let Some(author) = &issue.author {
+                        println!("   Author: {}", author.login);
+                    }
+
+                    println!("   🔗 {}", issue.url);
+                    println!("{}", "─".repeat(80));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+async fn show_actions_menu(client: &GraphQLClient, token: &str) -> Result<(), Box<dyn Error>> {
+    let scope_options = vec![
+        "All repositories",
+        "Specific repository",
+    ];
+
+    let scope = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Choose scope")
+        .items(&scope_options)
+        .default(0)
+        .interact()?;
+
+    let status_options = vec!["All statuses", "Completed", "In Progress", "Queued"];
+    let status_selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Filter by workflow status")
+        .items(&status_options)
+        .default(0)
+        .interact()?;
+
+    let status_filter = match status_selection {
+        1 => Some("completed"),
+        2 => Some("in_progress"),
+        3 => Some("queued"),
+        _ => None,
+    };
+
+    let actions_client = ActionsClient::new(token.to_string());
+
+    match scope {
+        0 => {
+            println!("\n⚡ Fetching workflow runs from all repos...");
+
+            // Fetch repos first
+            let repos_response = graphql::fetch_repositories(client, 20, false).await?;
+            let repo_tuples: Vec<(&str, &str)> = repos_response
+                .viewer
+                .repositories
+                .nodes
+                .iter()
+                .map(|r| (r.owner.login.as_str(), r.name.as_str()))
+                .collect();
+
+            let runs = actions_client.fetch_all_workflow_runs(&repo_tuples, status_filter, 5).await?;
+            display_workflow_runs(&runs, Some(15));
+        }
+        1 => {
+            let selector = RepoSelector::new(client).await?;
+
+            if let Some(repo) = selector.select_repository()? {
+                println!("\n⚡ Fetching workflow runs for {}...", repo.name_with_owner);
+
+                let runs = actions_client.fetch_repo_workflow_runs(
+                    &repo.owner.login,
+                    &repo.name,
+                    status_filter,
+                    10
+                ).await?;
+
+                display_workflow_runs(&runs.workflow_runs, None);
+            }
+        }
+        _ => {}
     }
 
     Ok(())

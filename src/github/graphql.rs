@@ -230,7 +230,7 @@ pub async fn fetch_recent_commits(
             viewer {
                 login
                 repositories(
-                    first: 10,
+                    first: 20,
                     orderBy: {field: PUSHED_AT, direction: DESC},
                     ownerAffiliations: [OWNER, COLLABORATOR]
                 ) {
@@ -618,6 +618,217 @@ pub async fn fetch_single_repo_commits(
     let variables = serde_json::json!({
         "owner": owner,
         "name": repo_name,
+        "limit": limit
+    });
+
+    client.query(query, variables).await
+}
+// ============================================================================
+// Branches Query - Get all local and remote branches
+// ============================================================================
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BranchesResponse {
+    pub repository: RepositoryWithBranches,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RepositoryWithBranches {
+    pub name: String,
+    #[serde(rename = "nameWithOwner")]
+    pub name_with_owner: String,
+    pub refs: RefsConnectionBranches,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RefsConnectionBranches {
+    pub nodes: Vec<BranchInfo>,
+    #[serde(rename = "totalCount")]
+    pub total_count: i32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BranchInfo {
+    pub name: String,
+    pub target: BranchTarget,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BranchTarget {
+    pub oid: String,
+    #[serde(rename = "committedDate")]
+    pub committed_date: Option<String>,
+    pub author: Option<BranchAuthor>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BranchAuthor {
+    pub name: Option<String>,
+}
+
+pub async fn fetch_branches(
+    client: &GraphQLClient,
+    owner: &str,
+    repo_name: &str,
+) -> Result<BranchesResponse, Box<dyn Error>> {
+    let query = r#"
+        query($owner: String!, $name: String!) {
+            repository(owner: $owner, name: $name) {
+                name
+                nameWithOwner
+                refs(refPrefix: "refs/heads/", first: 50, orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) {
+                    totalCount
+                    nodes {
+                        name
+                        target {
+                            oid
+                            ... on Commit {
+                                committedDate
+                                author {
+                                    name
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    "#;
+
+    let variables = serde_json::json!({
+        "owner": owner,
+        "name": repo_name
+    });
+
+    client.query(query, variables).await
+}
+
+// ============================================================================
+// Issues Query - Get repository issues
+// ============================================================================
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssuesResponse {
+    pub repository: RepositoryWithIssues,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RepositoryWithIssues {
+    pub name: String,
+    #[serde(rename = "nameWithOwner")]
+    pub name_with_owner: String,
+    pub issues: IssuesConnection,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssuesConnection {
+    #[serde(rename = "totalCount")]
+    pub total_count: i32,
+    pub nodes: Vec<Issue>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Issue {
+    pub number: i32,
+    pub title: String,
+    pub state: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    pub author: Option<IssueAuthor>,
+    pub url: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssueAuthor {
+    pub login: String,
+}
+
+pub async fn fetch_issues(
+    client: &GraphQLClient,
+    owner: &str,
+    repo_name: &str,
+    states: &[&str],
+    limit: i32,
+) -> Result<IssuesResponse, Box<dyn Error>> {
+    let query = r#"
+        query($owner: String!, $name: String!, $states: [IssueState!], $limit: Int!) {
+            repository(owner: $owner, name: $name) {
+                name
+                nameWithOwner
+                issues(states: $states, first: $limit, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                    totalCount
+                    nodes {
+                        number
+                        title
+                        state
+                        createdAt
+                        updatedAt
+                        url
+                        author {
+                            login
+                        }
+                    }
+                }
+            }
+        }
+    "#;
+
+    let variables = serde_json::json!({
+        "owner": owner,
+        "name": repo_name,
+        "states": states,
+        "limit": limit
+    });
+
+    client.query(query, variables).await
+}
+
+// ============================================================================
+// User Issues Query - Get issues across all repos
+// ============================================================================
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UserIssuesResponse {
+    pub viewer: ViewerWithIssues,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ViewerWithIssues {
+    pub login: String,
+    pub issues: IssuesConnection,
+}
+
+pub async fn fetch_user_issues(
+    client: &GraphQLClient,
+    states: &[&str],
+    limit: i32,
+) -> Result<UserIssuesResponse, Box<dyn Error>> {
+    let query = r#"
+        query($states: [IssueState!], $limit: Int!) {
+            viewer {
+                login
+                issues(states: $states, first: $limit, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                    totalCount
+                    nodes {
+                        number
+                        title
+                        state
+                        createdAt
+                        updatedAt
+                        url
+                        author {
+                            login
+                        }
+                    }
+                }
+            }
+        }
+    "#;
+
+    let variables = serde_json::json!({
+        "states": states,
         "limit": limit
     });
 
