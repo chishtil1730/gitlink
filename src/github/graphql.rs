@@ -571,3 +571,55 @@ pub async fn fetch_repository_sync_info(
 
     client.query(query, variables).await
 }
+// ============================================================================
+// Single Repository Commits Query
+// ============================================================================
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SingleRepoCommitsResponse {
+    pub repository: RepositoryWithCommits,
+}
+
+pub async fn fetch_single_repo_commits(
+    client: &GraphQLClient,
+    owner: &str,
+    repo_name: &str,
+    limit: i32,
+) -> Result<SingleRepoCommitsResponse, Box<dyn Error>> {
+    let query = r#"
+        query($owner: String!, $name: String!, $limit: Int!) {
+            repository(owner: $owner, name: $name) {
+                name
+                nameWithOwner
+                defaultBranchRef {
+                    target {
+                        ... on Commit {
+                            history(first: $limit) {
+                                nodes {
+                                    message
+                                    committedDate
+                                    oid
+                                    additions
+                                    deletions
+                                    author {
+                                        name
+                                        email
+                                        date
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    "#;
+
+    let variables = serde_json::json!({
+        "owner": owner,
+        "name": repo_name,
+        "limit": limit
+    });
+
+    client.query(query, variables).await
+}

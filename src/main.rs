@@ -136,43 +136,112 @@ async fn show_user_activity(client: &GraphQLClient) -> Result<(), Box<dyn Error>
 }
 
 async fn show_recent_commits(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
-    println!("\n💾 Fetching your recent commits...");
+    // Option 1: Select a specific repository
+    // Option 2: Show 3 most recent commits across all repos
+    let options = vec![
+        "Show 3 most recent commits (across all repos)",
+        "Select a specific repository",
+    ];
 
-    let commits = graphql::fetch_recent_commits(client, 5).await?;
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Choose option")
+        .items(&options)
+        .default(0)
+        .interact()?;
 
-    println!("\n{}", "=".repeat(80));
-    println!("Recent Commits by {}", commits.viewer.login);
-    println!("{}", "=".repeat(80));
+    match selection {
+        0 => {
+            // Show 3 most recent commits across all repos
+            println!("\n💾 Fetching your 3 most recent commits...");
+            let commits = graphql::fetch_recent_commits(client, 1).await?;
 
-    for repo in &commits.viewer.repositories.nodes {
-        if let Some(branch_ref) = &repo.default_branch_ref {
-            println!("\n📦 Repository: {}", repo.name_with_owner);
-            println!("{}", "─".repeat(80));
+            println!("\n{}", "=".repeat(80));
+            println!("3 Most Recent Commits by {}", commits.viewer.login);
+            println!("{}", "=".repeat(80));
 
-            for commit in &branch_ref.target.history.nodes {
-                // Parse and format the date
+            let mut all_commits = Vec::new();
+
+            // Collect all commits with repo info
+            for repo in &commits.viewer.repositories.nodes {
+                if let Some(branch_ref) = &repo.default_branch_ref {
+                    for commit in &branch_ref.target.history.nodes {
+                        all_commits.push((repo, commit));
+                    }
+                }
+            }
+
+            // Sort by date (most recent first)
+            all_commits.sort_by(|a, b| b.1.committed_date.cmp(&a.1.committed_date));
+
+            // Take only first 3
+            for (repo, commit) in all_commits.iter().take(3) {
+                println!("\n📦 Repository: {}", repo.name_with_owner);
+
                 if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&commit.committed_date) {
-                    println!("\n  📝 {}", dt.format("%Y-%m-%d %H:%M:%S"));
+                    println!("📝 {}", dt.format("%Y-%m-%d %H:%M:%S"));
                 }
 
-                println!("  🔑 {}", &commit.oid[..8]);
+                println!("🔑 {}", &commit.oid[..8]);
 
-                // Show first line of commit message
                 let first_line = commit.message.lines().next().unwrap_or(&commit.message);
-                println!("  💬 {}", first_line);
+                println!("💬 {}", first_line);
 
                 if let Some(author) = &commit.author.name {
-                    println!("  👤 {}", author);
+                    println!("👤 {}", author);
                 }
 
-                println!("  📊 +{} -{}", commit.additions, commit.deletions);
+                println!("📊 +{} -{}", commit.additions, commit.deletions);
+                println!("{}", "─".repeat(80));
             }
-        } else {
-            println!("\n📦 Repository: {} (no default branch)", repo.name_with_owner);
-        }
-    }
 
-    println!("\n{}", "=".repeat(80));
+            println!();
+        }
+        1 => {
+            // Select a specific repository
+            let selector = RepoSelector::new(client).await?;
+
+            if let Some(repo) = selector.select_repository()? {
+                println!("\n💾 Fetching commits from {}...", repo.name_with_owner);
+
+                // Fetch commits for this specific repo
+                let commit_data = graphql::fetch_single_repo_commits(
+                    client,
+                    &repo.owner.login,
+                    &repo.name,
+                    10
+                ).await?;
+
+                println!("\n{}", "=".repeat(80));
+                println!("Recent Commits - {}", commit_data.repository.name_with_owner);
+                println!("{}", "=".repeat(80));
+
+                if let Some(branch_ref) = &commit_data.repository.default_branch_ref {
+                    for commit in &branch_ref.target.history.nodes {
+                        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&commit.committed_date) {
+                            println!("\n📝 {}", dt.format("%Y-%m-%d %H:%M:%S"));
+                        }
+
+                        println!("🔑 {}", &commit.oid[..8]);
+
+                        let first_line = commit.message.lines().next().unwrap_or(&commit.message);
+                        println!("💬 {}", first_line);
+
+                        if let Some(author) = &commit.author.name {
+                            println!("👤 {}", author);
+                        }
+
+                        println!("📊 +{} -{}", commit.additions, commit.deletions);
+                        println!("{}", "─".repeat(80));
+                    }
+                } else {
+                    println!("\nNo default branch found for this repository.");
+                }
+
+                println!();
+            }
+        }
+        _ => {}
+    }
 
     Ok(())
 }

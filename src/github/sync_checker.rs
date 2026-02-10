@@ -240,13 +240,13 @@ impl SyncChecker {
         }
     }
 
-    /// Display sync status for a repository
+    /// Display sync status for a repository with detailed information
     pub async fn display_sync_status(
         &self,
         repo: &RepositoryInfo,
     ) -> Result<(), Box<dyn Error>> {
         println!("\n🔍 Checking sync status for: {}", repo.name_with_owner);
-        println!("{}", "─".repeat(80));
+        println!("{}", "=".repeat(80));
 
         let status = self.check_sync(repo, None).await?;
 
@@ -256,16 +256,78 @@ impl SyncChecker {
         if let Some(local_path) = self.find_local_repo(&repo.name) {
             let local_info = self.get_local_info(&local_path)?;
 
-            println!("\n📁 Local path: {}", local_path.display());
-            println!("🌿 Current branch: {}", local_info.current_branch);
-            println!("📝 Latest commit: {}", &local_info.latest_commit[..8]);
+            println!("\n📁 Local Repository Information:");
+            println!("   Path: {}", local_path.display());
+            println!("   Branch: {}", local_info.current_branch);
+            println!("   Commit: {}", &local_info.latest_commit[..8]);
 
             if local_info.uncommitted_changes {
-                println!("⚠️  You have uncommitted changes");
+                println!("   ⚠️  Uncommitted changes detected");
             }
+
+            // Show detailed sync information
+            match &status {
+                SyncStatus::InSync => {
+                    println!("\n✅ Sync Status: SYNCHRONIZED");
+                    println!("   Local and remote are at the same commit");
+                    println!("   No action needed");
+                }
+                SyncStatus::LocalAhead { commits } => {
+                    println!("\n⬆️  Sync Status: LOCAL AHEAD");
+                    println!("   Your local repository is {} commit(s) ahead of remote", commits);
+                    println!("   💡 Action: Run 'git push' to sync your changes to GitHub");
+                }
+                SyncStatus::RemoteAhead { commits } => {
+                    println!("\n⬇️  Sync Status: REMOTE AHEAD");
+                    println!("   Remote repository is {} commit(s) ahead of local", commits);
+                    println!("   💡 Action: Run 'git pull' to get the latest changes");
+                }
+                SyncStatus::Diverged { local_ahead, remote_ahead } => {
+                    println!("\n🔀 Sync Status: DIVERGED");
+                    println!("   Local is {} commit(s) ahead", local_ahead);
+                    println!("   Remote is {} commit(s) ahead", remote_ahead);
+                    println!("   💡 Action: You may need to merge or rebase");
+                    println!("   Suggested: 'git pull --rebase' or 'git pull' followed by merge");
+                }
+                SyncStatus::BranchMismatch { local_branch, remote_branch } => {
+                    println!("\n🔄 Sync Status: BRANCH MISMATCH");
+                    println!("   Local branch: {}", local_branch);
+                    println!("   Remote default: {}", remote_branch);
+                    println!("   💡 Action: Switch to {} or push your current branch", remote_branch);
+                }
+                SyncStatus::NoLocalRepo => {}
+            }
+
+            // Fetch and show remote info
+            let remote_info = fetch_repository_sync_info(
+                &self.client,
+                &repo.owner.login,
+                &repo.name,
+            )
+                .await?;
+
+            if let Some(remote_branch) = &remote_info.repository.default_branch_ref {
+                println!("\n🌐 Remote Repository Information:");
+                println!("   Default branch: {}", remote_branch.name);
+                println!("   Latest commit: {}", &remote_branch.target.oid[..8]);
+
+                if let Some(date) = &remote_branch.target.committed_date {
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date) {
+                        println!("   Last updated: {}", dt.format("%Y-%m-%d %H:%M:%S"));
+                    }
+                }
+
+                if let Some(history) = &remote_branch.target.history {
+                    println!("   Total commits: {}", history.total_count);
+                }
+            }
+        } else {
+            println!("\n❌ Repository not found locally");
+            println!("   💡 Action: Clone the repository to start working");
+            println!("   Git command: git clone {}", repo.ssh_url);
         }
 
-        println!("{}", "─".repeat(80));
+        println!("{}", "=".repeat(80));
 
         Ok(())
     }
