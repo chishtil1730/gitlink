@@ -112,6 +112,7 @@ fn display_menu() -> Result<usize, Box<dyn Error>> {
     Ok(selection)
 }
 
+//show user activity
 async fn show_user_activity(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
     println!("\n📊 Fetching your GitHub activity...");
 
@@ -132,7 +133,7 @@ async fn show_user_activity(client: &GraphQLClient) -> Result<(), Box<dyn Error>
     println!("📦 Repositories Created: {}", contrib.total_repository_contributions);
 
     // Show last 7 days of activity
-    println!("\n📅 Last 7 Days Activity:");
+    println!("\n📅 Last 3 Days Activity:");
     if let Some(last_week) = contrib.contribution_calendar.weeks.last() {
         for day in &last_week.contribution_days {
             let bar = "█".repeat(day.contribution_count.min(20) as usize);
@@ -145,6 +146,7 @@ async fn show_user_activity(client: &GraphQLClient) -> Result<(), Box<dyn Error>
     Ok(())
 }
 
+//Recent commits
 async fn show_recent_commits(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
     let options = vec![
         "Show 3 most recent commits (globally across all repos)",
@@ -253,6 +255,8 @@ async fn show_recent_commits(client: &GraphQLClient) -> Result<(), Box<dyn Error
     Ok(())
 }
 
+
+//Pull requests
 async fn show_pull_requests(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
     println!("\n🔀 Fetching your pull requests...");
 
@@ -300,6 +304,7 @@ async fn show_pull_requests(client: &GraphQLClient) -> Result<(), Box<dyn Error>
     Ok(())
 }
 
+//Select & check for repo
 async fn select_and_check_repo(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
     let selector = RepoSelector::new(client).await?;
 
@@ -327,6 +332,7 @@ async fn select_and_check_repo(client: &GraphQLClient) -> Result<(), Box<dyn Err
     Ok(())
 }
 
+//check for multiple repos (Poly Repo Hub)
 async fn check_multiple_repos(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
     let selector = RepoSelector::new(client).await?;
     let repos = selector.select_multiple()?;
@@ -344,6 +350,7 @@ async fn check_multiple_repos(client: &GraphQLClient) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+//checking for push status
 async fn check_push_status(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
     let selector = RepoSelector::new(client).await?;
 
@@ -369,6 +376,7 @@ async fn check_push_status(client: &GraphQLClient) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
+//Check if push is possible
 async fn verify_push_possible(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
     let selector = RepoSelector::new(client).await?;
 
@@ -406,6 +414,8 @@ async fn verify_push_possible(client: &GraphQLClient) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+
+//Get branches
 async fn show_branches(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
     let selector = RepoSelector::new(client).await?;
 
@@ -449,6 +459,8 @@ async fn show_branches(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+
+//For issues and actions
 async fn show_issues_and_actions(client: &GraphQLClient, token: &str) -> Result<(), Box<dyn Error>> {
     let options = vec![
         "Show Issues",
@@ -470,6 +482,7 @@ async fn show_issues_and_actions(client: &GraphQLClient, token: &str) -> Result<
     Ok(())
 }
 
+//Sub menu for issues
 async fn show_issues_menu(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
     let scope_options = vec![
         "All my issues across repos",
@@ -564,6 +577,7 @@ async fn show_issues_menu(client: &GraphQLClient) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+//Sub menu for actions
 async fn show_actions_menu(client: &GraphQLClient, token: &str) -> Result<(), Box<dyn Error>> {
     let scope_options = vec![
         "All repositories",
@@ -631,6 +645,7 @@ async fn show_actions_menu(client: &GraphQLClient, token: &str) -> Result<(), Bo
     Ok(())
 }
 
+//Show repo details
 async fn show_repo_details(
     client: &GraphQLClient,
     repo: &github::graphql::RepositoryInfo,
@@ -670,6 +685,8 @@ async fn show_repo_details(
     Ok(())
 }
 
+
+//Basic user info
 async fn show_basic_info(gh: &GitHubClient) -> Result<(), Box<dyn Error>> {
     println!("\n👤 Fetching basic user info (REST API)...");
 
@@ -684,6 +701,8 @@ async fn show_basic_info(gh: &GitHubClient) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+
+//Fetching for user
 async fn fetch_user(
     gh: &GitHubClient,
 ) -> Result<GitHubUser, reqwest::Error> {
