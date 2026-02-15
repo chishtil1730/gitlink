@@ -2,6 +2,9 @@ mod auth;
 mod scanner;
 mod github;
 
+use tokio::select;
+use tokio::io::{self, AsyncBufReadExt};
+
 use auth::oauth;
 use dialoguer::{theme::ColorfulTheme, Select};
 use github::actions_client::{ActionsClient, display_workflow_runs};
@@ -205,21 +208,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // ==============================
     // 🔐 OAuth Login
     // ==============================
-    use auth::token_store;
+    use auth::{oauth, token_store};
+    use dialoguer::{theme::ColorfulTheme, Confirm};
 
+    // Try loading existing token
     let token = match token_store::load_token() {
-        Ok(token) => {
-            println!("🔑 Using stored GitHub token");
-            token
-        }
+        Ok(token) => token,
+
         Err(_) => {
-            println!("🔐 No stored token found. Initiating OAuth flow...");
-            let token = oauth::login().await?;
-            token_store::save_token(&token)?;
-            println!("✅ Token saved securely!");
-            token
+            println!("🔐 You are not logged in.\n");
+
+            let should_login = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Would you like to login now?")
+                .default(true)
+                .interact()?;
+
+            if should_login {
+                // Perform login
+                let new_token = oauth::login().await?;
+
+                // Save token securely
+                token_store::save_token(&new_token)?;
+
+                println!("✅ Login successful. Token saved.\n");
+
+                new_token
+            } else {
+                println!("Exiting...");
+                return Ok(());
+            }
         }
     };
+
+
 
     let gh_client = GitHubClient::new(token.clone());
     let graphql_client = GraphQLClient::new(token.clone());
@@ -396,32 +417,43 @@ async fn show_user_activity(client: &GraphQLClient) -> Result<(), Box<dyn Error>
     let activity = graphql::fetch_user_activity(client).await?;
 
     println!("\n{}", "=".repeat(80));
-    println!("👤 User: {} ({})",
-             activity.viewer.name.as_deref().unwrap_or("N/A"),
-             activity.viewer.login
+    println!(
+        "👤 User: {} ({})",
+        activity.viewer.name.as_deref().unwrap_or("N/A"),
+        activity.viewer.login
     );
     println!("{}", "=".repeat(80));
 
     let contrib = &activity.viewer.contributions_collection;
-    println!("📈 Total Contributions: {}", contrib.contribution_calendar.total_contributions);
+
+    println!("📈 Total Contributions: {}",
+             contrib.contribution_calendar.total_contributions);
     println!("💾 Commits: {}", contrib.total_commit_contributions);
     println!("🔀 Pull Requests: {}", contrib.total_pull_request_contributions);
     println!("📝 Issues: {}", contrib.total_issue_contributions);
     println!("📦 Repositories Created: {}", contrib.total_repository_contributions);
 
-    // Show last 7 days of activity
     println!("\n📅 Last 3 Days Activity:");
-    if let Some(last_week) = contrib.contribution_calendar.weeks.last() {
-        for day in &last_week.contribution_days {
-            let bar = "█".repeat(day.contribution_count.min(20) as usize);
-            println!("  {} : {} ({})", day.date, bar, day.contribution_count);
-        }
+
+    // Flatten all weeks into a single list of days
+    let all_days: Vec<_> = contrib
+        .contribution_calendar
+        .weeks
+        .iter()
+        .flat_map(|week| &week.contribution_days)
+        .collect();
+
+    // Take last 3 calendar days
+    for day in all_days.iter().rev().take(3) {
+        let bar = "█".repeat(day.contribution_count.min(20) as usize);
+        println!("  {} : {} ({})", day.date, bar, day.contribution_count);
     }
 
     println!("{}", "=".repeat(80));
 
     Ok(())
 }
+
 
 //Recent commits
 async fn show_recent_commits(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {

@@ -1,80 +1,145 @@
 use open::that;
 use reqwest::Client;
 use serde::Deserialize;
-use std::env;
-use std::sync::mpsc;
-use std::thread;
-use tiny_http::{Response, Server};
+use std::time::{Duration, Instant};
+use tokio::time::sleep;
+use tokio::select;
+use tokio::io::{self, AsyncBufReadExt};
 
-const CALLBACK_ADDR: &str = "127.0.0.1:7878";
-const CALLBACK_PATH: &str = "/callback";
+// Client ID is baked in at compile time
+const CLIENT_ID: &str = env!("GITLINK_CLIENT_ID");
+
+#[derive(Deserialize, Debug)]
+struct DeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    expires_in: u64,
+    interval: u64,
+}
 
 #[derive(Deserialize, Debug)]
 struct AccessTokenResponse {
     access_token: String,
 }
 
+#[derive(Deserialize, Debug)]
+struct ErrorResponse {
+    error: String,
+}
+
 pub async fn login() -> Result<String, Box<dyn std::error::Error>> {
-    let client_id = env::var("GITLINK_CLIENT_ID")
-        .expect("GITLINK_CLIENT_ID not set");
-    let client_secret = env::var("GITLINK_CLIENT_SECRET")
-        .expect("GITLINK_CLIENT_SECRET not set");
-
-    let (tx, rx) = mpsc::channel();
-
-    thread::spawn(move || {
-        let server = Server::http(CALLBACK_ADDR).expect("Failed to start callback server");
-        for request in server.incoming_requests() {
-            if request.url().starts_with(CALLBACK_PATH) {
-                let url = request.url().to_string();
-                let code = url
-                    .split("code=")
-                    .nth(1)
-                    .and_then(|s| s.split('&').next())
-                    .expect("No code in callback");
-
-                let response = Response::from_string("Authorization complete. You can close this window.");
-                let _ = request.respond(response);
-                let _ = tx.send(code.to_string());
-                break;
-            }
-        }
-    });
-
-    let auth_url = format!(
-        "https://github.com/login/oauth/authorize?client_id={}&redirect_uri=http://{}{}&scope=read:user%20repo",
-        client_id, CALLBACK_ADDR, CALLBACK_PATH
-    );
-
-    println!("Opening browser for GitHub authorization...");
-    that(auth_url)?;
-
-    let code = rx.recv().expect("Failed to receive OAuth code");
     let client = Client::new();
 
-    // GitHub's token endpoint is very specific about the Accept header.
-    let response = client
-        .post("https://github.com/login/oauth/access_token")
-        .header("Accept", "application/json") // This forces GitHub to send JSON
-        .header("User-Agent", "gitlink")      // Required for all GitHub API interactions
+    println!("🔐 Initiating GitHub Device Flow authentication...\n");
+
+    // Step 1: Request device + user code
+    let device_response = client
+        .post("https://github.com/login/device/code")
+        .header("Accept", "application/json")
+        .header("User-Agent", "gitlink")
         .form(&[
-            ("client_id", &client_id),
-            ("client_secret", &client_secret),
-            ("code", &code),
-            ("redirect_uri", &format!("http://{}{}", CALLBACK_ADDR, CALLBACK_PATH)),
+            ("client_id", CLIENT_ID),
+            ("scope", "read:user repo"),
         ])
         .send()
         .await?;
 
-    // Hardened Debugging: Check the text before parsing
-    let text = response.text().await?;
+    let device_data: DeviceCodeResponse = device_response.json().await?;
 
-    if text.is_empty() {
-        return Err("Received an empty response from GitHub. Check your Client ID and Secret.".into());
+    // Step 2: Display code clearly
+    println!("\n========================================");
+    println!("📋 Your verification code: {}", device_data.user_code);
+    println!("🌐 Verification URL: {}", device_data.verification_uri);
+    println!("========================================\n");
+
+    println!("Press Enter to open browser...");
+    println!("Opening browser in 8 seconds...\n");
+
+    let mut reader = io::BufReader::new(io::stdin());
+    let mut input = String::new();
+
+    // Countdown task
+    let countdown = async {
+        for i in (1..=8).rev() {
+            println!("Opening browser in {}...", i);
+            sleep(Duration::from_secs(1)).await;
+        }
+    };
+
+    // Wait for Enter
+    let enter_pressed = async {
+        let _ = reader.read_line(&mut input).await;
+    };
+
+    // Whichever happens first: countdown finishes OR Enter pressed
+    select! {
+        _ = countdown => {},
+        _ = enter_pressed => {
+            println!("Opening browser...");
+        }
     }
 
-    let token_res: AccessTokenResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("Failed to parse GitHub response. Error: {}. Body: {}", e, text))?;
+    // Open browser
+    that(&device_data.verification_uri)?;
 
-    Ok(token_res.access_token)
+    println!("\nWaiting for authorization...\n");
+
+    // Step 3: Poll for access token
+    let mut interval = Duration::from_secs(device_data.interval);
+    let expires_at = Instant::now() + Duration::from_secs(device_data.expires_in);
+
+    loop {
+        if Instant::now() > expires_at {
+            return Err("Device code expired. Please try again.".into());
+        }
+
+        sleep(interval).await;
+
+        let token_response = client
+            .post("https://github.com/login/oauth/access_token")
+            .header("Accept", "application/json")
+            .header("User-Agent", "gitlink")
+            .form(&[
+                ("client_id", CLIENT_ID),
+                ("device_code", &device_data.device_code),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ])
+            .send()
+            .await?;
+
+        let text = token_response.text().await?;
+
+        // Try parsing access token
+        if let Ok(token_res) = serde_json::from_str::<AccessTokenResponse>(&text) {
+            println!("✅ Authorization successful!");
+            return Ok(token_res.access_token);
+        }
+
+        // Try parsing error
+        if let Ok(error_res) = serde_json::from_str::<ErrorResponse>(&text) {
+            match error_res.error.as_str() {
+                "authorization_pending" => {
+                    print!("⏳ ");
+                    std::io::Write::flush(&mut std::io::stdout())?;
+                    continue;
+                }
+                "slow_down" => {
+                    interval += Duration::from_secs(5);
+                    continue;
+                }
+                "expired_token" => {
+                    return Err("Device code expired. Please try again.".into());
+                }
+                "access_denied" => {
+                    return Err("Authorization was denied by the user.".into());
+                }
+                _ => {
+                    return Err(format!("GitHub returned an error: {}", error_res.error).into());
+                }
+            }
+        }
+
+        return Err(format!("Unexpected response from GitHub: {}", text).into());
+    }
 }
