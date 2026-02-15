@@ -1,15 +1,17 @@
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use git2::{ObjectType, Repository};
 
 use crate::scanner::patterns::PATTERNS;
 use crate::scanner::report::Finding;
 
 const MAX_FILE_SIZE: u64 = 2_000_000; // 2MB
-const ENTROPY_THRESHOLD: f64 = 4.5;
+const ENTROPY_THRESHOLD: f64 = 4.3;
 const MIN_SECRET_LENGTH: usize = 20;
 
 pub fn scan_directory(root: &str) -> Vec<Finding> {
@@ -22,15 +24,14 @@ pub fn scan_directory(root: &str) -> Vec<Finding> {
         .map(|e| e.into_path())
         .collect();
 
-    files
-        .par_iter()
-        .flat_map(|path| scan_file(path))
-        .collect()
+    files.par_iter().flat_map(|path| scan_file(path)).collect()
 }
 
 fn scan_file(path: &Path) -> Vec<Finding> {
     let mut findings = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
 
+    // Skip large files
     if let Ok(metadata) = fs::metadata(path) {
         if metadata.len() > MAX_FILE_SIZE {
             return findings;
@@ -42,6 +43,7 @@ fn scan_file(path: &Path) -> Vec<Finding> {
         Err(_) => return findings,
     };
 
+    // Skip binary-like files
     if content.contains('\0') {
         return findings;
     }
@@ -49,10 +51,25 @@ fn scan_file(path: &Path) -> Vec<Finding> {
     for (line_index, line) in content.lines().enumerate() {
         let line_number = line_index + 1;
 
-        // 1️⃣ Regex detection
+        // ==================================================
+        // 1️⃣ REGEX DETECTION (FIXED: uses captures_iter)
+        // ==================================================
         for pattern in PATTERNS.iter() {
-            for mat in pattern.regex.find_iter(line) {
-                let column_number = mat.start() + 1;
+            for caps in pattern.regex.captures_iter(line) {
+                let secret_match = caps.get(2).or_else(|| caps.get(0));
+                let secret = match secret_match {
+                    Some(m) => m.as_str(),
+                    None => continue,
+                };
+
+                let column_number = secret_match.unwrap().start() + 1;
+
+                let dedup_key =
+                    format!("{}:{}:{}:{}", path.display(), line_number, pattern.name, secret);
+
+                if !seen.insert(dedup_key) {
+                    continue;
+                }
 
                 let fingerprint = generate_fingerprint(
                     &path.display().to_string(),
@@ -73,31 +90,47 @@ fn scan_file(path: &Path) -> Vec<Finding> {
             }
         }
 
-        // 2️⃣ Entropy detection (secondary)
+        // ==================================================
+        // 2️⃣ ENTROPY DETECTION (Improved)
+        // ==================================================
         for token in extract_potential_tokens(line) {
-            if token.len() >= MIN_SECRET_LENGTH {
-                let entropy = shannon_entropy(&token);
+            if token.len() < MIN_SECRET_LENGTH {
+                continue;
+            }
 
-                if entropy >= ENTROPY_THRESHOLD {
-                    let column_number = line.find(&token).unwrap_or(0) + 1;
+            // Skip obvious variable names
+            if token.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                continue;
+            }
 
-                    let fingerprint = generate_fingerprint(
-                        &path.display().to_string(),
-                        line_number,
-                        line,
-                        "High Entropy Secret",
-                    );
+            let entropy = shannon_entropy(&token);
 
-                    findings.push(Finding {
-                        secret_type: "High Entropy Secret".to_string(),
-                        file: path.display().to_string(),
-                        line: line_number,
-                        column: column_number,
-                        content: line.trim_end().to_string(),
-                        fingerprint,
-                        commit: None,
-                    });
+            if entropy >= ENTROPY_THRESHOLD {
+                let column_number = line.find(&token).unwrap_or(0) + 1;
+
+                let dedup_key =
+                    format!("{}:{}:entropy:{}", path.display(), line_number, token);
+
+                if !seen.insert(dedup_key) {
+                    continue;
                 }
+
+                let fingerprint = generate_fingerprint(
+                    &path.display().to_string(),
+                    line_number,
+                    line,
+                    "High Entropy Secret",
+                );
+
+                findings.push(Finding {
+                    secret_type: "High Entropy Secret".to_string(),
+                    file: path.display().to_string(),
+                    line: line_number,
+                    column: column_number,
+                    content: line.trim_end().to_string(),
+                    fingerprint,
+                    commit: None,
+                });
             }
         }
     }
@@ -106,9 +139,19 @@ fn scan_file(path: &Path) -> Vec<Finding> {
 }
 
 fn extract_potential_tokens(line: &str) -> Vec<String> {
-    line.split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '/' && c != '+')
-        .filter(|token| token.len() >= MIN_SECRET_LENGTH)
-        .map(|s| s.to_string())
+    line.split_whitespace()
+        .flat_map(|segment| {
+            segment
+                .trim_matches(|c: char| {
+                    !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '/' && c != '+'
+                })
+                .split(|c: char| {
+                    !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '/' && c != '+'
+                })
+                .filter(|token| token.len() >= MIN_SECRET_LENGTH)
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        })
         .collect()
 }
 
@@ -145,8 +188,11 @@ fn generate_fingerprint(
     format!("{:x}", hasher.finalize())
 }
 
-use git2::{Repository, ObjectType};
-use std::collections::HashSet;
+//
+// ===============================
+// 🔥 GIT HISTORY SCANNING (FIXED)
+// ===============================
+//
 
 pub fn scan_git_history() -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -183,7 +229,6 @@ pub fn scan_git_history() -> Vec<Finding> {
             if entry.kind() == Some(ObjectType::Blob) {
                 let blob_oid = entry.id();
 
-                // Avoid scanning same blob multiple times
                 if !visited_blobs.insert(blob_oid) {
                     return git2::TreeWalkResult::Ok;
                 }
@@ -207,6 +252,7 @@ pub fn scan_git_history() -> Vec<Finding> {
 
     findings
 }
+
 fn scan_history_blob(
     root: &str,
     name: &str,
@@ -215,13 +261,26 @@ fn scan_history_blob(
     findings: &mut Vec<Finding>,
 ) {
     let full_path = format!("{}{}", root, name);
+    let mut seen = HashSet::new();
 
     for (line_index, line) in content.lines().enumerate() {
         let line_number = line_index + 1;
 
-        // Regex detection
         for pattern in PATTERNS.iter() {
-            for mat in pattern.regex.find_iter(line) {
+            for caps in pattern.regex.captures_iter(line) {
+                let secret_match = caps.get(2).or_else(|| caps.get(0));
+                let secret = match secret_match {
+                    Some(m) => m.as_str(),
+                    None => continue,
+                };
+
+                let dedup_key =
+                    format!("{}:{}:{}:{}", full_path, line_number, pattern.name, secret);
+
+                if !seen.insert(dedup_key) {
+                    continue;
+                }
+
                 let fingerprint = generate_fingerprint(
                     &full_path,
                     line_number,
@@ -233,39 +292,12 @@ fn scan_history_blob(
                     secret_type: pattern.name.to_string(),
                     file: full_path.clone(),
                     line: line_number,
-                    column: mat.start() + 1,
+                    column: secret_match.unwrap().start() + 1,
                     content: line.to_string(),
                     fingerprint,
                     commit: Some(commit_id.to_string()),
                 });
             }
         }
-
-        // Entropy detection
-        for token in extract_potential_tokens(line) {
-            if token.len() >= MIN_SECRET_LENGTH {
-                let entropy = shannon_entropy(&token);
-
-                if entropy >= ENTROPY_THRESHOLD {
-                    let fingerprint = generate_fingerprint(
-                        &full_path,
-                        line_number,
-                        line,
-                        "High Entropy Secret",
-                    );
-
-                    findings.push(Finding {
-                        secret_type: "High Entropy Secret".to_string(),
-                        file: full_path.clone(),
-                        line: line_number,
-                        column: line.find(&token).unwrap_or(0) + 1,
-                        content: line.to_string(),
-                        fingerprint,
-                        commit: Some(commit_id.to_string()),
-                    });
-                }
-            }
-        }
     }
 }
-

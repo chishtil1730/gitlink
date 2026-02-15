@@ -152,6 +152,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let api_key = "DumMyAPikeyqnf193h1hfnm193qhfj12qfy9hq";
     println!("{api_key}");
 
+    let api_key2 = "Dumajdf8afhyqofmq9f193h1hfnm193qhfj12qfy9hq";
+    println!("{api_key2}");
+
     Ok(())
 }
 

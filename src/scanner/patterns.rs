@@ -9,25 +9,43 @@ pub struct SecretPattern {
 
 pub static PATTERNS: Lazy<Vec<SecretPattern>> = Lazy::new(|| {
     vec![
+        // ------------------------------------------------------------
+        // AWS Access Key ID (Safe & precise)
+        // ------------------------------------------------------------
         SecretPattern {
             name: "AWS Access Key",
             regex: Regex::new(r"\bAKIA[0-9A-Z]{16}\b").unwrap(),
         },
 
+        // ------------------------------------------------------------
+        // AWS Secret Access Key (Requires assignment context)
+        // ------------------------------------------------------------
         SecretPattern {
             name: "AWS Secret Key",
             regex: Regex::new(
-                r#"(?i)(aws_secret_access_key|secret_access_key)\s*[:=]\s*['"]?[A-Za-z0-9/+]{40}['"]?"#
+                r#"(?i)\b(aws_secret_access_key|secret_access_key)\b\s*[:=]\s*['"]([A-Za-z0-9/+]{40})['"]"#
             ).unwrap(),
         },
 
+        // ------------------------------------------------------------
+        // Generic API Keys / Tokens (Hardened)
+        // ------------------------------------------------------------
+        // Fixes:
+        // - Detects api_key, api_key2, api_key_prod
+        // - Requires quoted assignment
+        // - Enforces minimum 20 chars
+        // - Avoids matching random type names
+        // ------------------------------------------------------------
         SecretPattern {
             name: "Generic API Key / Token",
             regex: Regex::new(
-                r#"(?i)\b(api[_-]?key|token|secret|auth[_-]?key)\b\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,}['"]?"#
+                r#"(?i)\b(api[_-]?key\w*|token\w*|secret\w*|auth[_-]?key\w*)\b\s*[:=]\s*['"]([A-Za-z0-9_\-]{20,})['"]"#
             ).unwrap(),
         },
 
+        // ------------------------------------------------------------
+        // JWT Tokens
+        // ------------------------------------------------------------
         SecretPattern {
             name: "JWT Token",
             regex: Regex::new(
@@ -35,6 +53,9 @@ pub static PATTERNS: Lazy<Vec<SecretPattern>> = Lazy::new(|| {
             ).unwrap(),
         },
 
+        // ------------------------------------------------------------
+        // Private Keys (PEM format)
+        // ------------------------------------------------------------
         SecretPattern {
             name: "Private Key",
             regex: Regex::new(
@@ -42,11 +63,17 @@ pub static PATTERNS: Lazy<Vec<SecretPattern>> = Lazy::new(|| {
             ).unwrap(),
         },
 
+        // ------------------------------------------------------------
+        // GitHub Personal Access Token
+        // ------------------------------------------------------------
         SecretPattern {
             name: "GitHub Token",
             regex: Regex::new(r"\bghp_[A-Za-z0-9]{36}\b").unwrap(),
         },
 
+        // ------------------------------------------------------------
+        // Stripe Live Secret Key
+        // ------------------------------------------------------------
         SecretPattern {
             name: "Stripe Secret Key",
             regex: Regex::new(r"\bsk_live_[A-Za-z0-9]{24,}\b").unwrap(),
