@@ -14,6 +14,9 @@ use github::sync_checker::SyncChecker;
 use serde::Deserialize;
 use std::error::Error;
 
+use git2::Repository;
+use crate::github::push_checker::{check_push_status as local_check_push_status};
+
 #[derive(Debug, Deserialize)]
 struct GitHubUser {
     login: String,
@@ -619,69 +622,67 @@ async fn check_multiple_repos(client: &GraphQLClient) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-//checking for push status
-async fn check_push_status(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
-    let selector = RepoSelector::new(client).await?;
 
-    if let Some(repo) = selector.select_repository()? {
-        println!("\n🔄 Checking push status for {}...", repo.name_with_owner);
 
-        let branch = if let Some(branch_ref) = &repo.default_branch_ref {
-            &branch_ref.name
-        } else {
-            println!("❌ No default branch found");
-            return Ok(());
-        };
+async fn check_push_status(_client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
 
-        let status = client.check_push_status(
-            &repo.owner.login,
-            &repo.name,
-            branch
-        ).await?;
+    // Discover local repo
+    let repo = Repository::discover(".")?;
 
-        display_push_status(&status);
-    }
+    // Get current branch name
+    let head = repo.head()?;
+    let branch = head
+        .shorthand()
+        .ok_or("Unable to determine current branch")?
+        .to_string();
+
+    println!("\n🔄 Checking push status for current branch '{}'...", branch);
+
+    let status = local_check_push_status(&branch)?;
+
+    display_push_status(&status);
 
     Ok(())
 }
 
-//Check if push is possible
-async fn verify_push_possible(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
-    let selector = RepoSelector::new(client).await?;
 
-    if let Some(repo) = selector.select_repository()? {
-        println!("\n🚀 Verifying push possibility for {}...", repo.name_with_owner);
+async fn verify_push_possible(_client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
 
-        let branch = if let Some(branch_ref) = &repo.default_branch_ref {
-            &branch_ref.name
-        } else {
-            println!("❌ No default branch found");
-            return Ok(());
-        };
+    let repo = Repository::discover(".")?;
 
-        let status = client.verify_push_possible(
-            &repo.owner.login,
-            &repo.name,
-            branch
-        ).await?;
+    let head = repo.head()?;
+    let branch = head
+        .shorthand()
+        .ok_or("Unable to determine current branch")?
+        .to_string();
 
-        display_push_status(&status);
+    println!("\n🚀 Verifying push possibility for branch '{}'...", branch);
 
-        if status.can_push {
-            println!("\n✅ You can safely push to this branch!");
-        } else {
-            println!("\n⚠️  Action required before pushing:");
-            if status.remote_ahead {
-                println!("   • Pull remote changes first");
-            }
-            if status.has_conflicts {
-                println!("   • Resolve merge conflicts");
-            }
+    let status = local_check_push_status(&branch)?;
+
+    display_push_status(&status);
+
+    if status.can_push {
+        println!("\n✅ You can safely push to this branch!");
+    } else {
+        println!("\n⚠️  Action required before pushing:");
+
+        if status.has_uncommitted_changes {
+            println!("   • Commit your changes first");
+        }
+
+        if status.remote_ahead {
+            println!("   • Pull remote changes first");
+        }
+
+        if status.has_conflicts {
+            println!("   • Resolve merge conflicts");
         }
     }
 
     Ok(())
 }
+
 
 
 //Get branches
