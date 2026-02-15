@@ -2,6 +2,28 @@ use git2::{Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 
+
+///Push preview
+
+#[derive(Debug)]
+pub struct PushPreview {
+    pub branch: String,
+    pub commits: Vec<PreviewCommit>,
+    pub total_files: usize,
+    pub total_insertions: usize,
+    pub total_deletions: usize,
+}
+
+#[derive(Debug)]
+pub struct PreviewCommit {
+    pub short_id: String,
+    pub message: String,
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
+
 /// Push status information for a branch
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PushStatus {
@@ -108,6 +130,87 @@ pub fn check_push_status(branch: &str) -> Result<PushStatus, Box<dyn Error>> {
     Ok(status)
 }
 
+//push preview func
+
+pub fn generate_push_preview(branch: &str) -> Result<Option<PushPreview>, Box<dyn Error>> {
+    let repo = Repository::discover(".")?;
+
+    let head = repo.head()?;
+    let local_oid = head.target().ok_or("No local HEAD")?;
+
+    let remote_ref_name = format!("refs/remotes/origin/{}", branch);
+    let remote_ref = match repo.find_reference(&remote_ref_name) {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+
+    let remote_oid = remote_ref.target().ok_or("Invalid remote reference")?;
+
+    if local_oid == remote_oid {
+        return Ok(None); // Nothing to push
+    }
+
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push(local_oid)?;
+    revwalk.hide(remote_oid)?;
+
+    let mut commits = Vec::new();
+    let mut total_files = 0;
+    let mut total_insertions = 0;
+    let mut total_deletions = 0;
+
+    for oid_result in revwalk {
+        let oid = oid_result?;
+        let commit = repo.find_commit(oid)?;
+
+        let short_id = commit.id().to_string()[..8].to_string();
+        let message = commit.summary().unwrap_or("No message").to_string();
+
+        let tree = commit.tree()?;
+
+        let parent_tree = if commit.parent_count() > 0 {
+            Some(commit.parent(0)?.tree()?)
+        } else {
+            None
+        };
+
+        let diff = repo.diff_tree_to_tree(
+            parent_tree.as_ref(),
+            Some(&tree),
+            None,
+        )?;
+
+        let stats = diff.stats()?;
+
+        let files_changed = stats.files_changed();
+        let insertions = stats.insertions();
+        let deletions = stats.deletions();
+
+        total_files += files_changed;
+        total_insertions += insertions;
+        total_deletions += deletions;
+
+        commits.push(PreviewCommit {
+            short_id,
+            message,
+            files_changed,
+            insertions,
+            deletions,
+        });
+    }
+
+    commits.reverse(); // Oldest first (cleaner output)
+
+    Ok(Some(PushPreview {
+        branch: branch.to_string(),
+        commits,
+        total_files,
+        total_insertions,
+        total_deletions,
+    }))
+}
+
+
 /// Display push status in a user-friendly format
 pub fn display_push_status(status: &PushStatus) {
     println!("\n{}", "=".repeat(80));
@@ -135,6 +238,42 @@ pub fn display_push_status(status: &PushStatus) {
     println!("  Unpushed commits: {}", if status.has_unpushed_commits { "⚠️  Yes" } else { "✅ No" });
     println!("  Remote ahead: {}", if status.remote_ahead { "⚠️  Yes" } else { "✅ No" });
     println!("  Conflicts: {}", if status.has_conflicts { "❌ Yes" } else { "✅ No" });
+
+    println!("{}", "=".repeat(80));
+}
+
+pub fn display_push_preview(preview: &PushPreview) {
+    println!("\n{}", "=".repeat(80));
+    println!("🚀 Push Preview");
+    println!("{}", "=".repeat(80));
+
+    println!("Branch: {}", preview.branch);
+    println!("Unpushed commits: {}\n", preview.commits.len());
+
+    for commit in &preview.commits {
+        println!(
+            "{}  {}",
+            commit.short_id,
+            commit.message
+        );
+
+        println!(
+            "   Files: {}  +{}  -{}",
+            commit.files_changed,
+            commit.insertions,
+            commit.deletions
+        );
+        println!();
+    }
+
+    println!("{}", "-".repeat(80));
+    println!("TOTAL");
+    println!(
+        "Files: {}  Insertions: +{}  Deletions: -{}",
+        preview.total_files,
+        preview.total_insertions,
+        preview.total_deletions
+    );
 
     println!("{}", "=".repeat(80));
 }

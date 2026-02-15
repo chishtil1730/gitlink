@@ -7,7 +7,13 @@ use dialoguer::{theme::ColorfulTheme, Select};
 use github::actions_client::{ActionsClient, display_workflow_runs};
 use github::client::GitHubClient;
 use github::graphql::{self, GraphQLClient};
-use github::push_checker::display_push_status;
+use github::push_checker::{
+    display_push_status,
+    generate_push_preview,
+    display_push_preview,
+    check_push_status as local_check_push_status,
+};
+
 use github::repo_selector::RepoSelector;
 use github::sync_checker::SyncChecker;
 
@@ -15,7 +21,6 @@ use serde::Deserialize;
 use std::error::Error;
 
 use git2::Repository;
-use crate::github::push_checker::{check_push_status as local_check_push_status};
 
 #[derive(Debug, Deserialize)]
 struct GitHubUser {
@@ -662,6 +667,13 @@ async fn verify_push_possible(_client: &GraphQLClient) -> Result<(), Box<dyn Err
 
     display_push_status(&status);
 
+    // 🔥 Push Preview Integration
+    if status.has_unpushed_commits {
+        if let Some(preview) = generate_push_preview(&branch)? {
+            display_push_preview(&preview);
+        }
+    }
+
     if status.can_push {
         println!("\n✅ You can safely push to this branch!");
     } else {
@@ -682,6 +694,7 @@ async fn verify_push_possible(_client: &GraphQLClient) -> Result<(), Box<dyn Err
 
     Ok(())
 }
+
 
 
 
