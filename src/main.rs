@@ -29,28 +29,73 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // ==============================
     // 🚨 SECRET SCANNER MODE
     // ==============================
-    if args.len() >= 2 && args[1] == "scan" {
+    if args.iter().any(|a| a == "scan") {
+
+        // ============================
+        // 🔧 Ignore Management Flags
+        // ============================
+
+        if args.iter().any(|a| a == "--list-ignored") {
+            scanner::ignore::list_ignored();
+            return Ok(());
+        }
+
+        if args.iter().any(|a| a == "--clear-ignored") {
+            scanner::ignore::clear_all();
+            return Ok(());
+        }
+
+        if let Some(pos) = args.iter().position(|a| a == "--remove-ignore") {
+            if let Some(short_id) = args.get(pos + 1) {
+                scanner::ignore::remove_by_short_id(short_id);
+            } else {
+                println!("Please provide short ID after --remove-ignore");
+            }
+            return Ok(());
+        }
+
+        if args.iter().any(|a| a == "--manage-ignored") {
+            manage_ignored_interactive()?;
+            return Ok(());
+        }
+
+        // ============================
+        // 🔎 Normal Scan Mode
+        // ============================
+
         println!("🔎 Running GitLink Secret Scanner...\n");
 
         let mut findings = scanner::engine::scan_directory(".");
 
-        // 👇 ADD THIS SECTION
+        // History scanning
         if args.iter().any(|a| a == "--history") {
             println!("📜 Scanning Git history...\n");
+
             let history_findings = scanner::engine::scan_git_history();
             findings.extend(history_findings);
         }
 
-        // Load ignore database
-        let mut ignore_db = scanner::ignore::load_ignore_db();
+        // ============================
+        // 🚫 Ignore Filtering
+        // ============================
 
-        // Remove already ignored findings
-        findings.retain(|f| !ignore_db.ignored.contains(&f.fingerprint));
+        let ignore_db = scanner::ignore::load_ignore_db();
+
+        findings.retain(|f| {
+            !ignore_db
+                .ignored
+                .iter()
+                .any(|i| i.fingerprint == f.fingerprint)
+        });
 
         if findings.is_empty() {
             println!("✅ No secrets found.");
             return Ok(());
         }
+
+        // ============================
+        // 📋 Interactive Handling
+        // ============================
 
         for finding in &findings {
             println!(
@@ -65,7 +110,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
 
             println!("    |");
-            println!("{:4} | {}", finding.line, finding.content);
+            println!("{:4} | {}", finding.line, finding.content.trim());
             println!("    |");
             println!("    = detected: {}", finding.secret_type);
 
@@ -74,23 +119,57 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 "Keep showing this in future scans",
             ];
 
-            let selection = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+            let selection = dialoguer::Select::with_theme(
+                &dialoguer::theme::ColorfulTheme::default()
+            )
                 .with_prompt("What do you want to do?")
                 .items(&options)
                 .default(1)
                 .interact()?;
 
             if selection == 0 {
-                ignore_db.ignored.push(finding.fingerprint.clone());
+                let short_id = finding.fingerprint[..8].to_string();
+
+                // Extract variable name safely
+                let variable = {
+                    let left_side = finding
+                        .content
+                        .split('=')
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+
+                    left_side
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .filter(|s| !s.is_empty())
+                        .last()
+                        .unwrap_or("unknown")
+                        .to_string()
+                };
+
+                let source = if finding.commit.is_some() {
+                    "history".to_string()
+                } else {
+                    "working".to_string()
+                };
+
+                scanner::ignore::add_ignored(scanner::ignore::IgnoredItem {
+                    fingerprint: finding.fingerprint.clone(),
+                    short_id,
+                    variable,
+                    source,
+                    commit: finding.commit.clone(),
+                });
+
                 println!("✔ Finding ignored.\n");
             }
         }
 
-        scanner::ignore::save_ignore_db(&ignore_db);
-
         println!("\n🔎 Scan completed.");
         return Ok(());
     }
+
+
 
 
     // ==============================
@@ -185,6 +264,108 @@ fn display_menu() -> Result<usize, Box<dyn Error>> {
 
     Ok(selection)
 }
+
+// display menu for ignore console:
+fn manage_ignored_interactive() -> Result<(), Box<dyn std::error::Error>> {
+    use dialoguer::{Select, theme::ColorfulTheme};
+
+    let mut db = scanner::ignore::load_ignore_db();
+
+    if db.ignored.is_empty() {
+        println!("No ignored findings.");
+        return Ok(());
+    }
+
+    loop {
+        // Build display items with source awareness
+        let mut items: Vec<String> = db
+            .ignored
+            .iter()
+            .map(|item| {
+                if item.source == "history" {
+                    if let Some(commit) = &item.commit {
+                        format!(
+                            "[{}] {} (commit {})",
+                            item.short_id,
+                            item.variable,
+                            &commit[..8]
+                        )
+                    } else {
+                        format!(
+                            "[{}] {} (history)",
+                            item.short_id,
+                            item.variable
+                        )
+                    }
+                } else {
+                    format!(
+                        "[{}] {} (working)",
+                        item.short_id,
+                        item.variable
+                    )
+                }
+            })
+            .collect();
+
+        items.push("Clear ALL ignored".to_string());
+        items.push("Exit".to_string());
+
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Manage ignored findings")
+            .items(&items)
+            .default(0)
+            .interact()?;
+
+        // Remove specific ignored item
+        if selection < db.ignored.len() {
+            let removed = db.ignored.remove(selection);
+
+            if removed.source == "history" {
+                if let Some(commit) = removed.commit {
+                    println!(
+                        "Removed [{}] {} (commit {})",
+                        removed.short_id,
+                        removed.variable,
+                        &commit[..8]
+                    );
+                } else {
+                    println!(
+                        "Removed [{}] {} (history)",
+                        removed.short_id,
+                        removed.variable
+                    );
+                }
+            } else {
+                println!(
+                    "Removed [{}] {} (working)",
+                    removed.short_id,
+                    removed.variable
+                );
+            }
+
+            scanner::ignore::save_ignore_db(&db);
+        }
+        // Clear all
+        else if selection == db.ignored.len() {
+            db.ignored.clear();
+            scanner::ignore::save_ignore_db(&db);
+            println!("All ignored findings cleared.");
+        }
+        // Exit
+        else {
+            break;
+        }
+
+        if db.ignored.is_empty() {
+            println!("No ignored findings remaining.");
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+
 
 
 //show user activity

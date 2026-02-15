@@ -194,6 +194,8 @@ fn generate_fingerprint(
 // ===============================
 //
 
+use git2::{DiffOptions};
+
 pub fn scan_git_history() -> Vec<Finding> {
     let mut findings = Vec::new();
 
@@ -205,53 +207,159 @@ pub fn scan_git_history() -> Vec<Finding> {
     let mut revwalk = repo.revwalk().unwrap();
     revwalk.push_head().unwrap();
 
-    let mut visited_blobs = HashSet::new();
+    let mut seen: HashSet<String> = HashSet::new();
 
-    for oid_result in revwalk {
-        let oid = match oid_result {
-            Ok(o) => o,
-            Err(_) => continue,
-        };
-
+    for oid in revwalk.flatten() {
         let commit = match repo.find_commit(oid) {
             Ok(c) => c,
             Err(_) => continue,
         };
 
-        let tree = match commit.tree() {
+        if commit.parent_count() == 0 {
+            continue;
+        }
+
+        let parent = match commit.parent(0) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        let parent_tree = match parent.tree() {
             Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        let commit_tree = match commit.tree() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        let mut diff_opts = DiffOptions::new();
+        diff_opts.include_unmodified(false);
+
+        let diff = match repo.diff_tree_to_tree(
+            Some(&parent_tree),
+            Some(&commit_tree),
+            Some(&mut diff_opts),
+        ) {
+            Ok(d) => d,
             Err(_) => continue,
         };
 
         let commit_id = commit.id().to_string();
 
-        tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
-            if entry.kind() == Some(ObjectType::Blob) {
-                let blob_oid = entry.id();
+        diff.foreach(
+            &mut |_, _| true,
+            None,
+            None,
+            Some(&mut |delta, _, line| {
 
-                if !visited_blobs.insert(blob_oid) {
-                    return git2::TreeWalkResult::Ok;
+                // Only scan added lines
+                if line.origin() != '+' {
+                    return true;
                 }
 
-                if let Ok(blob) = repo.find_blob(blob_oid) {
-                    if let Ok(content) = std::str::from_utf8(blob.content()) {
-                        scan_history_blob(
-                            root,
-                            entry.name().unwrap_or("unknown"),
-                            content,
-                            &commit_id,
-                            &mut findings,
-                        );
-                    }
-                }
-            }
+                let content = match std::str::from_utf8(line.content()) {
+                    Ok(c) => c,
+                    Err(_) => return true,
+                };
 
-            git2::TreeWalkResult::Ok
-        }).unwrap_or(());
+                let file = delta.new_file().path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                let line_number = line.new_lineno().unwrap_or(0) as usize;
+
+                scan_history_line(
+                    &file,
+                    content,
+                    line_number,
+                    &commit_id,
+                    &mut findings,
+                    &mut seen,
+                );
+
+                true
+            }),
+        ).ok();
     }
 
     findings
 }
+
+
+//helper func
+fn scan_history_line(
+    file: &str,
+    line: &str,
+    line_number: usize,
+    commit_id: &str,
+    findings: &mut Vec<Finding>,
+    seen: &mut HashSet<String>,
+) {
+    for pattern in PATTERNS.iter() {
+        for mat in pattern.regex.find_iter(line) {
+
+            let fingerprint = generate_fingerprint(
+                file,
+                line_number,
+                line,
+                pattern.name,
+            );
+
+            let dedup_key = format!("{}:{}:{}", file, line_number, pattern.name);
+
+            if seen.insert(dedup_key) {
+                findings.push(Finding {
+                    secret_type: pattern.name.to_string(),
+                    file: file.to_string(),
+                    line: line_number,
+                    column: mat.start() + 1,
+                    content: line.trim().to_string(),
+                    fingerprint,
+                    commit: Some(commit_id.to_string()),
+                });
+            }
+        }
+    }
+
+    // Entropy detection
+    for token in extract_potential_tokens(line) {
+        if token.len() >= MIN_SECRET_LENGTH {
+
+            if token.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                continue;
+            }
+
+            let entropy = shannon_entropy(&token);
+
+            if entropy >= ENTROPY_THRESHOLD {
+
+                let fingerprint = generate_fingerprint(
+                    file,
+                    line_number,
+                    line,
+                    "High Entropy Secret",
+                );
+
+                let dedup_key = format!("{}:{}:entropy", file, line_number);
+
+                if seen.insert(dedup_key) {
+                    findings.push(Finding {
+                        secret_type: "High Entropy Secret".to_string(),
+                        file: file.to_string(),
+                        line: line_number,
+                        column: line.find(&token).unwrap_or(0) + 1,
+                        content: line.trim().to_string(),
+                        fingerprint,
+                        commit: Some(commit_id.to_string()),
+                    });
+                }
+            }
+        }
+    }
+}
+
 
 fn scan_history_blob(
     root: &str,
