@@ -32,35 +32,66 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if args.len() >= 2 && args[1] == "scan" {
         println!("🔎 Running GitLink Secret Scanner...\n");
 
-        let results = scanner::engine::scan_directory(".");
+        let mut findings = scanner::engine::scan_directory(".");
 
-        if results.is_empty() {
+        // 👇 ADD THIS SECTION
+        if args.iter().any(|a| a == "--history") {
+            println!("📜 Scanning Git history...\n");
+            let history_findings = scanner::engine::scan_git_history();
+            findings.extend(history_findings);
+        }
+
+        // Load ignore database
+        let mut ignore_db = scanner::ignore::load_ignore_db();
+
+        // Remove already ignored findings
+        findings.retain(|f| !ignore_db.ignored.contains(&f.fingerprint));
+
+        if findings.is_empty() {
             println!("✅ No secrets found.");
-        } else {
-            println!("⚠️  Secrets detected:\n");
+            return Ok(());
+        }
 
-            for finding in results {
-                println!(
-                    "\n{}:{}:{}",
-                    finding.file,
-                    finding.line,
-                    finding.column
-                );
+        for finding in &findings {
+            println!(
+                "\n{}:{}:{}",
+                finding.file,
+                finding.line,
+                finding.column
+            );
 
-                println!("    |");
-                println!(
-                    "{:4} | {}",
-                    finding.line,
-                    finding.content
-                );
-                println!("    |");
-                println!("    = detected: {}", finding.secret_type);
+            if let Some(commit) = &finding.commit {
+                println!("    @ commit {}", &commit[..8]);
+            }
 
+            println!("    |");
+            println!("{:4} | {}", finding.line, finding.content);
+            println!("    |");
+            println!("    = detected: {}", finding.secret_type);
+
+            let options = vec![
+                "Ignore this finding permanently",
+                "Keep showing this in future scans",
+            ];
+
+            let selection = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                .with_prompt("What do you want to do?")
+                .items(&options)
+                .default(1)
+                .interact()?;
+
+            if selection == 0 {
+                ignore_db.ignored.push(finding.fingerprint.clone());
+                println!("✔ Finding ignored.\n");
             }
         }
 
+        scanner::ignore::save_ignore_db(&ignore_db);
+
+        println!("\n🔎 Scan completed.");
         return Ok(());
     }
+
 
     // ==============================
     // 🚪 LOGOUT MODE
