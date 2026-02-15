@@ -1,4 +1,5 @@
 mod auth;
+mod scanner;
 mod github;
 
 use auth::oauth;
@@ -9,9 +10,9 @@ use github::graphql::{self, GraphQLClient};
 use github::push_checker::display_push_status;
 use github::repo_selector::RepoSelector;
 use github::sync_checker::SyncChecker;
+
 use serde::Deserialize;
 use std::error::Error;
-use std::io::{self, Write};
 
 #[derive(Debug, Deserialize)]
 struct GitHubUser {
@@ -20,24 +21,59 @@ struct GitHubUser {
     public_repos: u32,
 }
 
-#[derive(Debug, Deserialize)]
-struct Repo {
-    name: String,
-    private: bool,
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Handle logout command
+
     let args: Vec<String> = std::env::args().collect();
 
+    // ==============================
+    // 🚨 SECRET SCANNER MODE
+    // ==============================
+    if args.len() >= 2 && args[1] == "scan" {
+        println!("🔎 Running GitLink Secret Scanner...\n");
+
+        let results = scanner::engine::scan_directory(".");
+
+        if results.is_empty() {
+            println!("✅ No secrets found.");
+        } else {
+            println!("⚠️  Secrets detected:\n");
+
+            for finding in results {
+                println!(
+                    "\n{}:{}:{}",
+                    finding.file,
+                    finding.line,
+                    finding.column
+                );
+
+                println!("    |");
+                println!(
+                    "{:4} | {}",
+                    finding.line,
+                    finding.content
+                );
+                println!("    |");
+                println!("    = detected: {}", finding.secret_type);
+
+            }
+        }
+
+        return Ok(());
+    }
+
+    // ==============================
+    // 🚪 LOGOUT MODE
+    // ==============================
     if args.len() >= 3 && args[1] == "auth" && args[2] == "logout" {
         auth::token_store::delete_token()?;
         println!("✅ Logged out from GitHub");
         return Ok(());
     }
 
-    // OAuth login with persistent token storage
+    // ==============================
+    // 🔐 OAuth Login
+    // ==============================
     use auth::token_store;
 
     let token = match token_store::load_token() {
@@ -54,11 +90,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    // Create GitHub clients
     let gh_client = GitHubClient::new(token.clone());
     let graphql_client = GraphQLClient::new(token.clone());
 
-    // Display main menu
+    // ==============================
+    // 🎛 INTERACTIVE MENU LOOP
+    // ==============================
     loop {
         let choice = display_menu()?;
 
@@ -77,9 +114,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 println!("👋 Goodbye!");
                 break;
             }
-            _ => println!("❌ Invalid choice. Please try again."),
+            _ => println!("❌ Invalid choice."),
         }
     }
+
+    let api_key = "DumMyAPikeyqnf193h1hfnm193qhfj12qfy9hq";
+    println!("{api_key}");
 
     Ok(())
 }
@@ -111,6 +151,7 @@ fn display_menu() -> Result<usize, Box<dyn Error>> {
 
     Ok(selection)
 }
+
 
 //show user activity
 async fn show_user_activity(client: &GraphQLClient) -> Result<(), Box<dyn Error>> {
