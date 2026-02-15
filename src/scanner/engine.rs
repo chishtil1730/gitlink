@@ -195,8 +195,9 @@ fn generate_fingerprint(
 //
 
 use git2::{DiffOptions};
+use chrono::{Utc, Duration};
 
-pub fn scan_git_history() -> Vec<Finding> {
+pub fn scan_git_history(since_days: Option<i64>) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     let repo = match Repository::discover(".") {
@@ -209,11 +210,23 @@ pub fn scan_git_history() -> Vec<Finding> {
 
     let mut seen: HashSet<String> = HashSet::new();
 
+    // Compute cutoff timestamp if --since provided
+    let cutoff_timestamp = since_days.map(|days| {
+        (Utc::now() - Duration::days(days)).timestamp()
+    });
+
     for oid in revwalk.flatten() {
         let commit = match repo.find_commit(oid) {
             Ok(c) => c,
             Err(_) => continue,
         };
+
+        // Skip commits older than cutoff
+        if let Some(cutoff) = cutoff_timestamp {
+            if commit.time().seconds() < cutoff {
+                continue;
+            }
+        }
 
         if commit.parent_count() == 0 {
             continue;
@@ -254,7 +267,6 @@ pub fn scan_git_history() -> Vec<Finding> {
             None,
             Some(&mut |delta, _, line| {
 
-                // Only scan added lines
                 if line.origin() != '+' {
                     return true;
                 }
@@ -286,6 +298,7 @@ pub fn scan_git_history() -> Vec<Finding> {
 
     findings
 }
+
 
 
 //helper func

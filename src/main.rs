@@ -60,18 +60,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // ============================
-        // 🔎 Normal Scan Mode
+        // 🔎 Scan Execution
         // ============================
 
         println!("🔎 Running GitLink Secret Scanner...\n");
 
         let mut findings = scanner::engine::scan_directory(".");
 
-        // History scanning
+        // ----------------------------
+        // 📜 History scanning
+        // ----------------------------
+
         if args.iter().any(|a| a == "--history") {
             println!("📜 Scanning Git history...\n");
 
-            let history_findings = scanner::engine::scan_git_history();
+            // Parse --since <days>
+            let since_days = if let Some(pos) = args.iter().position(|a| a == "--since") {
+                args.get(pos + 1)
+                    .and_then(|v| v.parse::<i64>().ok())
+            } else {
+                None
+            };
+
+            let history_findings =
+                scanner::engine::scan_git_history(since_days);
+
             findings.extend(history_findings);
         }
 
