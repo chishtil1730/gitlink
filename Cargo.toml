@@ -12,7 +12,7 @@ keyring = "2"
 open = "5"
 tiny_http = "0.12"
 dirs = "5"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 dialoguer = "0.11"
 console = "0.15"
 regex = "1"
@@ -26,6 +26,8 @@ grep-matcher = "0.1"
 ignore = "0.4"
 rayon = "1.8"
 git2 = "0.18"
+uuid = { version = "1", features = ["v4", "serde"] }
+crossterm = "0.29.0"
 
 
 

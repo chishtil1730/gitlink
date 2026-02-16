@@ -1,6 +1,7 @@
 mod auth;
 mod scanner;
 mod github;
+mod planner;
 
 use tokio::select;
 use tokio::io::{self, AsyncBufReadExt};
@@ -36,6 +37,17 @@ struct GitHubUser {
 async fn main() -> Result<(), Box<dyn Error>> {
 
     let args: Vec<String> = std::env::args().collect();
+
+
+    // ==============================
+    // 🗂️ PLANNER MODE
+    // ==============================
+    if args.iter().any(|a| a == "plan") {
+        planner::ui::run_planner()?;
+        return Ok(());
+    }
+
+
 
     // ==============================
     // 🚨 SECRET SCANNER MODE
