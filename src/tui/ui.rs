@@ -2,7 +2,6 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    text::Line,
     widgets::{Block, Paragraph},
 };
 
@@ -12,6 +11,9 @@ use super::{
 };
 
 const MAX_SUGGESTIONS_SHOWN: usize = 8;
+
+/// Padding rows above the logo. Change this to move the logo down.
+const LOGO_TOP_PADDING: u16 = 2;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -24,7 +26,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let logo_h = logo::logo_height();
     let dialog_h = 3u16;
-    let suggestion_h = if app.show_suggestions {
+    let suggestion_h = if app.show_suggestions && !app.filtered_commands.is_empty() {
         (app.filtered_commands.len().min(MAX_SUGGESTIONS_SHOWN) + 2) as u16
     } else {
         0
@@ -33,49 +35,42 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Total fixed bottom area (dialog + suggestions)
     let fixed_bottom = dialog_h + suggestion_h;
 
-    // Output area sits between logo and dialog
-    let output_h = area.height.saturating_sub(logo_h + fixed_bottom);
+    // Output area: everything between logo block and dialog
+    let logo_block_h = LOGO_TOP_PADDING + logo_h;
+    let output_h = area.height.saturating_sub(logo_block_h + fixed_bottom);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(logo_h),
-            Constraint::Length(output_h),
-            Constraint::Length(dialog_h),
-            Constraint::Length(suggestion_h),
+            Constraint::Length(LOGO_TOP_PADDING), // top padding above logo
+            Constraint::Length(logo_h),           // logo
+            Constraint::Length(output_h),         // scrollable output
+            Constraint::Length(dialog_h),         // dialog box
+            Constraint::Length(suggestion_h),     // suggestions (0 when hidden)
         ])
         .split(area);
 
     // --- Logo ---
-    f.render_widget(logo::render(app.elapsed), chunks[0]);
+    f.render_widget(logo::render(app.elapsed), chunks[1]);
 
     // --- Output area ---
+    // output_scroll == 0 means "follow bottom". Scrolling UP increases output_scroll.
     let output_lines = output_block::render_lines(&app.outputs);
     let total_lines = output_lines.len() as u16;
-    let visible_h = chunks[1].height.saturating_sub(0);
+    let visible_h = chunks[2].height;
 
-    // Compute scroll: if scroll is 0, pin to bottom
+    // How far from the bottom the user has scrolled (0 = pinned to bottom)
+    let clamped_scroll = app.output_scroll.min(total_lines.saturating_sub(visible_h));
+    // ratatui scroll(row, col): row 0 = top of content
+    // We want bottom-pinned by default, so scroll row = max_scroll - user_scroll
     let max_scroll = total_lines.saturating_sub(visible_h);
-    let scroll = if app.output_scroll == 0 {
-        max_scroll
-    } else {
-        max_scroll.saturating_sub(app.output_scroll)
-    };
+    let scroll_row = max_scroll.saturating_sub(clamped_scroll);
 
-    // Pad lines with empty lines at top to push content to bottom
-    let mut padded: Vec<Line> = Vec::new();
-    if total_lines < visible_h {
-        for _ in 0..(visible_h - total_lines) {
-            padded.push(Line::from(""));
-        }
-    }
-    padded.extend(output_lines);
-
-    let output_widget = Paragraph::new(padded)
-        .scroll((scroll, 0))
+    let output_widget = Paragraph::new(output_lines)
+        .scroll((scroll_row, 0))
         .style(Style::default().bg(Color::Rgb(10, 10, 14)));
 
-    f.render_widget(output_widget, chunks[1]);
+    f.render_widget(output_widget, chunks[2]);
 
     // --- Dialog box ---
     let dialog = dialog_box::render_with_spinner(
@@ -84,7 +79,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         app.is_executing,
         app.elapsed,
     );
-    f.render_widget(dialog, chunks[2]);
+    f.render_widget(dialog, chunks[3]);
 
     // --- Suggestion list ---
     if app.show_suggestions && !app.filtered_commands.is_empty() {
@@ -93,6 +88,6 @@ pub fn draw(f: &mut Frame, app: &App) {
             app.selected_index,
             MAX_SUGGESTIONS_SHOWN,
         );
-        f.render_widget(suggestions, chunks[3]);
+        f.render_widget(suggestions, chunks[4]);
     }
 }

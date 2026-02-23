@@ -1,5 +1,5 @@
 use std::time::{Duration, SystemTime};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::commands::{Command, COMMANDS};
 
@@ -20,23 +20,17 @@ pub struct OutputBlock {
 pub struct App {
     pub input: String,
     pub cursor_pos: usize,
-
     pub filtered_commands: Vec<Command>,
     pub selected_index: usize,
-
     pub outputs: Vec<OutputBlock>,
+    /// Lines scrolled UP from bottom. 0 = pinned to bottom.
     pub output_scroll: u16,
-
     pub is_executing: bool,
     pub show_suggestions: bool,
-
     pub start_time: SystemTime,
     pub elapsed: f32,
-
-    // Command history navigation
     pub cmd_history: Vec<String>,
     pub history_index: Option<usize>,
-
     pending_command: Option<String>,
 }
 
@@ -57,7 +51,6 @@ impl App {
             history_index: None,
             pending_command: None,
         };
-        // Welcome message
         app.outputs.push(OutputBlock {
             kind: OutputKind::Info,
             content: "Welcome to GitLink TUI. Type / to see available commands.".to_string(),
@@ -75,19 +68,29 @@ impl App {
 
     /// Returns true if the app should quit.
     pub fn on_key(&mut self, key: KeyEvent) -> bool {
+        // FIX: Only handle actual key-press events.
+        // Ignoring Release/Repeat prevents the double-input bug.
+        if key.kind != KeyEventKind::Press {
+            return false;
+        }
+
         if self.is_executing {
             return false;
         }
 
         match key.code {
-            // Quit
-            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
+            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
 
-            // Submit
-            KeyCode::Enter => self.submit(),
+            // Enter: select suggestion if open, else submit
+            KeyCode::Enter => {
+                if self.show_suggestions && !self.filtered_commands.is_empty() {
+                    self.accept_suggestion();
+                } else {
+                    self.submit();
+                }
+            }
 
-            // Backspace
             KeyCode::Backspace => {
                 if self.cursor_pos > 0 {
                     self.cursor_pos -= 1;
@@ -96,7 +99,6 @@ impl App {
                 }
             }
 
-            // Cursor movement
             KeyCode::Left => {
                 if self.cursor_pos > 0 {
                     self.cursor_pos -= 1;
@@ -108,7 +110,7 @@ impl App {
                 }
             }
 
-            // Suggestion navigation
+            // Up/Down: navigate suggestion list when visible, else command history
             KeyCode::Up => {
                 if self.show_suggestions && !self.filtered_commands.is_empty() {
                     if self.selected_index > 0 {
@@ -122,37 +124,31 @@ impl App {
             }
             KeyCode::Down => {
                 if self.show_suggestions && !self.filtered_commands.is_empty() {
-                    self.selected_index =
-                        (self.selected_index + 1) % self.filtered_commands.len();
+                    self.selected_index = (self.selected_index + 1) % self.filtered_commands.len();
                 } else {
                     self.navigate_history(1);
                 }
             }
 
-            // Tab: autocomplete selected suggestion
+            // Tab: accept highlighted suggestion
             KeyCode::Tab => {
                 if self.show_suggestions && !self.filtered_commands.is_empty() {
-                    let cmd = self.filtered_commands[self.selected_index].name.clone();
-                    self.input = format!("/{}", cmd);
-                    self.cursor_pos = self.input.len();
-                    self.show_suggestions = false;
+                    self.accept_suggestion();
                 }
             }
 
-            // Scroll output
+            // PageUp scrolls output UP (away from bottom), PageDown back down
             KeyCode::PageUp => {
-                self.output_scroll = self.output_scroll.saturating_sub(3);
-            }
-            KeyCode::PageDown => {
                 self.output_scroll = self.output_scroll.saturating_add(3);
             }
+            KeyCode::PageDown => {
+                self.output_scroll = self.output_scroll.saturating_sub(3);
+            }
 
-            // Character input
             KeyCode::Char(c) => {
                 self.input.insert(self.cursor_pos, c);
                 self.cursor_pos += 1;
                 self.update_suggestions();
-                // Reset history navigation on new input
                 self.history_index = None;
             }
 
@@ -161,25 +157,35 @@ impl App {
         false
     }
 
+    fn accept_suggestion(&mut self) {
+        let cmd = self.filtered_commands[self.selected_index].name.clone();
+        self.input = format!("/{}", cmd);
+        self.cursor_pos = self.input.len();
+        self.show_suggestions = false;
+        self.filtered_commands.clear();
+        self.selected_index = 0;
+    }
+
     fn update_suggestions(&mut self) {
         if self.input.starts_with('/') {
             let query = self.input[1..].to_lowercase();
             self.filtered_commands = COMMANDS
                 .iter()
-                .filter(|c| c.name.contains(query.as_str()) || c.description.to_lowercase().contains(query.as_str()))
+                .filter(|c| {
+                    query.is_empty()
+                        || c.name.contains(query.as_str())
+                        || c.description.to_lowercase().contains(query.as_str())
+                })
                 .cloned()
                 .collect();
-            self.show_suggestions = !self.filtered_commands.is_empty() || self.input == "/";
-            if self.input == "/" {
-                self.filtered_commands = COMMANDS.to_vec();
-            }
-            // Clamp selection
+            self.show_suggestions = !self.filtered_commands.is_empty();
             if self.selected_index >= self.filtered_commands.len() {
                 self.selected_index = 0;
             }
         } else {
             self.show_suggestions = false;
             self.filtered_commands.clear();
+            self.selected_index = 0;
         }
     }
 
@@ -189,7 +195,6 @@ impl App {
             return;
         }
 
-        // Push the command echo to output
         self.outputs.push(OutputBlock {
             kind: OutputKind::Command,
             content: raw.clone(),
@@ -201,20 +206,19 @@ impl App {
         self.input.clear();
         self.cursor_pos = 0;
         self.show_suggestions = false;
+        self.filtered_commands.clear();
+        self.selected_index = 0;
         self.output_scroll = 0;
 
-        // Validate it's a slash command
         if !raw.starts_with('/') {
             self.outputs.push(OutputBlock {
                 kind: OutputKind::Error,
-                content: format!(
-                    "Only slash commands are supported. Try typing /help to see available commands."
-                ),
+                content: "Only slash commands are supported. Type / to see available commands."
+                    .to_string(),
             });
             return;
         }
 
-        // Find closest match if unknown
         let cmd_name = raw[1..].split_whitespace().next().unwrap_or("").to_string();
         let known = COMMANDS.iter().any(|c| c.name == cmd_name);
         if !known {
@@ -251,6 +255,7 @@ impl App {
         if let Some(idx) = self.history_index {
             self.input = self.cmd_history[idx].clone();
             self.cursor_pos = self.input.len();
+            self.update_suggestions();
         }
     }
 
@@ -261,12 +266,10 @@ impl App {
     pub fn push_output(&mut self, block: OutputBlock) {
         self.is_executing = false;
         self.outputs.push(block);
-        // Auto-scroll to bottom
         self.output_scroll = 0;
     }
 }
 
-/// Simple Levenshtein distance for closest-match suggestions
 fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
