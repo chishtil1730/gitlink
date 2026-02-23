@@ -29,6 +29,7 @@ git2 = "0.18"
 uuid = { version = "1", features = ["v4", "serde"] }
 crossterm = "0.29.0"
 config = "0.15.19"
+ratatui = "0.30.0"
 
 
 

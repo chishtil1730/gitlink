@@ -1,8 +1,10 @@
+mod app;
 mod auth;
-mod scanner;
 mod github;
 mod planner;
 mod prp_hub;
+mod scanner;
+mod tui;
 
 use tokio::select;
 use tokio::io::{self, AsyncBufReadExt};
@@ -39,6 +41,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let args: Vec<String> = std::env::args().collect();
 
+
+    // ==============================
+    // 🖥️  TUI MODE
+    // ==============================
+    if args.iter().any(|a| a == "tui") {
+        tui::run()?;
+        return Ok(());
+    }
 
     // ==============================
     // 🔗 PRP HUB MODE
