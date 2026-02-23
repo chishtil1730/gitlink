@@ -6,23 +6,28 @@ pub mod commit;
 pub mod push;
 pub mod rollback;
 pub mod group;
+pub mod status;
+pub mod config;
 
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 
 use crate::prp_hub::{
     commit::commit_all,
+    config::{is_excluded, load_config},
     discovery::discover_repositories,
     errors::PrpError,
     group::list_groups,
     push::push_all,
     rollback::rollback_all,
     state::validate_repo,
+    status::{collect_status, display_repo_status},
     types::CommitSession,
 };
 
-// NOTE: Add the following to Cargo.toml before building:
+// NOTE: Cargo.toml dependencies required:
 //   uuid = { version = "1", features = ["v4"] }
 //   walkdir = "2"
+//   serde_json = "1"
 use uuid::Uuid;
 
 /// Entry point for `gitlink prp start`
@@ -32,11 +37,11 @@ pub fn run_prp_start() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", "=".repeat(80));
 
     // ──────────────────────────────────────────────────────
-    // 1. Discovery
+    // 1. Discovery — filter out excluded repos
     // ──────────────────────────────────────────────────────
     println!("\n🔍 Scanning for git repositories...");
 
-    let repos = match discover_repositories(".") {
+    let all_repos = match discover_repositories(".") {
         Ok(r) => r,
         Err(PrpError::NoRepositoriesFound) => {
             println!("\n❌ No git repositories found in the current directory.");
@@ -45,9 +50,20 @@ pub fn run_prp_start() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => return Err(Box::new(e)),
     };
 
+    let config = load_config();
+    let repos: Vec<_> = all_repos
+        .into_iter()
+        .filter(|r| !is_excluded(&config, &r.path))
+        .collect();
+
+    if repos.is_empty() {
+        println!("\n❌ No active repositories (all are excluded). Use `gitlink prp list` to re-add repos.");
+        return Ok(());
+    }
+
     if repos.len() == 1 {
         println!(
-            "\n⚠️  Only one repository found ({}). PRP Hub is most useful with multiple repositories.",
+            "\n⚠️  Only one active repository ({}). PRP Hub is most useful with multiple repositories.",
             repos[0].name
         );
         let proceed = Confirm::with_theme(&ColorfulTheme::default())
@@ -59,7 +75,7 @@ pub fn run_prp_start() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n📂 Discovered {} repository/repositories:\n", repos.len());
+    println!("\n📂 {} active repository/repositories:\n", repos.len());
     for (i, r) in repos.iter().enumerate() {
         println!("  {}. {} ({})", i + 1, r.name, r.path.display());
     }
@@ -88,7 +104,45 @@ pub fn run_prp_start() -> Result<(), Box<dyn std::error::Error>> {
     println!("✅ All repositories are in a valid state.");
 
     // ──────────────────────────────────────────────────────
-    // 3. Prompt for commit message
+    // 3. Collect and display working tree status
+    // ──────────────────────────────────────────────────────
+    println!("\n📊 Working tree status:\n");
+
+    let mut any_changes = false;
+    let mut repo_statuses = Vec::new();
+
+    for repo in &repos {
+        let st = collect_status(repo);
+        if !st.is_empty() {
+            display_repo_status(repo, &st);
+            any_changes = true;
+        } else {
+            println!("\n  📁 {} — nothing to commit", repo.name);
+        }
+        repo_statuses.push((repo, st));
+    }
+
+    if !any_changes {
+        println!("\nℹ️  Nothing to commit in any repository.");
+        return Ok(());
+    }
+
+    // ──────────────────────────────────────────────────────
+    // 4. Confirmation gate
+    // ──────────────────────────────────────────────────────
+    println!();
+    let confirmed = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Do you want to commit these changes?")
+        .default(false)
+        .interact()?;
+
+    if !confirmed {
+        println!("\nℹ️  Aborted. No commits were made.");
+        return Ok(());
+    }
+
+    // ──────────────────────────────────────────────────────
+    // 5. Prompt for commit message
     // ──────────────────────────────────────────────────────
     let commit_message: String = Input::with_theme(&ColorfulTheme::default())
         .with_prompt("Commit message")
@@ -100,16 +154,15 @@ pub fn run_prp_start() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ──────────────────────────────────────────────────────
-    // 4. Generate session group ID
+    // 6. Generate session group ID
     // ──────────────────────────────────────────────────────
     let group_id = format!("gitlink-{}", Uuid::new_v4());
-
     println!("\n🆔 Session Group-ID: {}", group_id);
 
     let mut session = CommitSession::new(group_id.clone(), repos.clone());
 
     // ──────────────────────────────────────────────────────
-    // 5. Commit phase
+    // 7. Commit phase
     // ──────────────────────────────────────────────────────
     println!("\n📝 Committing in all repositories...\n");
 
@@ -132,30 +185,21 @@ pub fn run_prp_start() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // ──────────────────────────────────────────────────────
-    // 6. Push prompt
+    // 8. Push prompt
     // ──────────────────────────────────────────────────────
     let push_options = vec!["No", "Yes"];
     let push_choice = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Do you want to push all repositories to remote?")
         .items(&push_options)
-        .default(0) // Default: No
+        .default(0)
         .interact()?;
 
     if push_choice == 1 {
-        // ──────────────────────────────────────────────────
-        // 7. Push phase (sequential)
-        // ──────────────────────────────────────────────────
         println!("\n🚀 Pushing repositories...\n");
 
-        // Only push repos that were actually committed
         let committed_repos: Vec<_> = repos
             .iter()
-            .filter(|r| {
-                session
-                    .committed
-                    .iter()
-                    .any(|c| c.path == r.path)
-            })
+            .filter(|r| session.committed.iter().any(|c| c.path == r.path))
             .cloned()
             .collect();
 

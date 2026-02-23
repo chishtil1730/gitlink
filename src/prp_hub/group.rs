@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::process::Command;
 
+use dialoguer::{theme::ColorfulTheme, Select};
+
+use crate::prp_hub::config::{exclude_repo, include_repo, is_excluded, load_config, save_config};
 use crate::prp_hub::discovery::discover_repositories;
 
 #[derive(Debug)]
@@ -10,15 +13,12 @@ pub struct CommitInfo {
     pub first_line: String,
 }
 
-/// Parse `git log` output for a repo and extract commits bearing a Group-ID trailer.
-/// Returns a map of group_id -> Vec<CommitInfo>.
 fn extract_groups_from_repo(
     repo_name: &str,
     repo_path: &std::path::Path,
 ) -> HashMap<String, Vec<CommitInfo>> {
     let mut map: HashMap<String, Vec<CommitInfo>> = HashMap::new();
 
-    // git log --format="%H%n%B%n---COMMIT_END---"
     let output = Command::new("git")
         .args(["log", "--format=%H%n%B%n---COMMIT_END---"])
         .current_dir(repo_path)
@@ -39,7 +39,6 @@ fn extract_groups_from_repo(
 
         let mut lines = block.lines();
 
-        // First line is the full SHA
         let sha = match lines.next() {
             Some(s) => s.trim().to_string(),
             None => continue,
@@ -52,7 +51,6 @@ fn extract_groups_from_repo(
         let rest: Vec<&str> = lines.collect();
         let body = rest.join("\n");
 
-        // Find Group-ID trailer
         let group_id = body.lines().find_map(|l| {
             let l = l.trim();
             if l.starts_with("Group-ID:") {
@@ -67,7 +65,6 @@ fn extract_groups_from_repo(
             None => continue,
         };
 
-        // First non-empty body line is the commit subject
         let first_line = body
             .lines()
             .find(|l| !l.trim().is_empty())
@@ -86,40 +83,112 @@ fn extract_groups_from_repo(
     map
 }
 
-/// Scan all repos from CWD and print a grouped view of commits sharing Group-IDs.
+/// `gitlink prp list` — shows commit groups and lets user manage repo inclusion.
 pub fn list_groups() -> Result<(), Box<dyn std::error::Error>> {
-    let repos = discover_repositories(".")?;
+    let all_repos = discover_repositories(".")?;
+    let mut config = load_config();
 
-    println!("\n🔗 Scanning {} repositories for linked commit groups...\n", repos.len());
+    loop {
+        println!("\n{}", "=".repeat(80));
+        println!("🔗 GitLink PRP Hub — Repository Sync Membership");
+        println!("{}", "=".repeat(80));
 
-    // Merge all per-repo maps
+        let active: Vec<_> = all_repos
+            .iter()
+            .filter(|r| !is_excluded(&config, &r.path))
+            .collect();
+
+        let excluded: Vec<_> = all_repos
+            .iter()
+            .filter(|r| is_excluded(&config, &r.path))
+            .collect();
+
+        println!("\n✅ Active repos ({}):", active.len());
+        for r in &active {
+            println!("   • {} ({})", r.name, r.path.display());
+        }
+
+        if !excluded.is_empty() {
+            println!("\n🚫 Excluded repos ({}):", excluded.len());
+            for r in &excluded {
+                println!("   • {} ({})", r.name, r.path.display());
+            }
+        }
+
+        let mut menu_items: Vec<String> = Vec::new();
+        menu_items.push("📋 Show commit groups".to_string());
+
+        for r in &active {
+            menu_items.push(format!("🚫 Exclude '{}' from sync", r.name));
+        }
+        for r in &excluded {
+            menu_items.push(format!("✅ Re-add '{}' to sync", r.name));
+        }
+        menu_items.push("← Quit".to_string());
+
+        let choice = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Choose an action")
+            .items(&menu_items)
+            .default(0)
+            .interact()?;
+
+        if choice == 0 {
+            show_commit_groups(&active)?;
+            continue;
+        }
+
+        let back_index = menu_items.len() - 1;
+        if choice == back_index {
+            break;
+        }
+
+        if choice >= 1 && choice <= active.len() {
+            let repo = active[choice - 1];
+            exclude_repo(&mut config, repo.path.clone());
+            save_config(&config);
+            println!("\n🚫 '{}' excluded from PRP sync.", repo.name);
+            continue;
+        }
+
+        let readd_start = active.len() + 1;
+        if choice >= readd_start && choice < back_index {
+            let repo = excluded[choice - readd_start];
+            include_repo(&mut config, &repo.path);
+            save_config(&config);
+            println!("\n✅ '{}' re-added to PRP sync.", repo.name);
+        }
+    }
+
+    Ok(())
+}
+
+fn show_commit_groups(
+    repos: &[&crate::prp_hub::types::RepositoryInfo],
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n🔍 Scanning {} active repositories for linked commit groups...\n", repos.len());
+
     let mut global: HashMap<String, Vec<CommitInfo>> = HashMap::new();
 
-    for repo in &repos {
+    for repo in repos {
         let local = extract_groups_from_repo(&repo.name, &repo.path);
         for (gid, commits) in local {
             global.entry(gid).or_default().extend(commits);
         }
     }
 
-    // Only show groups that appear in more than one repo (true poly-repo groups)
-    // or all groups — show all, but flag single-repo ones
     if global.is_empty() {
         println!("ℹ️  No commits with Group-ID trailers found.");
         return Ok(());
     }
 
-    // Sort group IDs for deterministic output
     let mut group_ids: Vec<String> = global.keys().cloned().collect();
     group_ids.sort();
 
     for gid in &group_ids {
         let commits = &global[gid];
-        let repo_count = {
-            let mut names: Vec<&str> = commits.iter().map(|c| c.repo_name.as_str()).collect();
-            names.dedup();
-            names.len()
-        };
+        let mut seen_repos: Vec<&str> = commits.iter().map(|c| c.repo_name.as_str()).collect();
+        seen_repos.dedup();
+        let repo_count = seen_repos.len();
 
         println!("{}", "=".repeat(80));
         println!("📦 Group-ID: {}", gid);
@@ -134,7 +203,6 @@ pub fn list_groups() -> Result<(), Box<dyn std::error::Error>> {
                 msg = c.first_line
             );
         }
-
         println!();
     }
 
