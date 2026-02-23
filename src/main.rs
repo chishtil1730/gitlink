@@ -2,6 +2,7 @@ mod auth;
 mod scanner;
 mod github;
 mod planner;
+mod prp_hub;
 
 use tokio::select;
 use tokio::io::{self, AsyncBufReadExt};
@@ -38,6 +39,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let args: Vec<String> = std::env::args().collect();
 
+
+    // ==============================
+    // 🔗 PRP HUB MODE
+    // ==============================
+    if args.iter().any(|a| a == "prp") {
+        if args.iter().any(|a| a == "list") {
+            prp_hub::run_prp_list()?;
+        } else {
+            // Default subcommand: start
+            prp_hub::run_prp_start()?;
+        }
+        return Ok(());
+    }
 
     // ==============================
     // 🗂️ PLANNER MODE
