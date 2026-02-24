@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
 
-use crate::tui::app::{InputField, PlannerFocus, PlannerMode, PlannerOverlay};
+use crate::tui::app::{InputField, PlannerFocus, PlannerMode, PlannerOverlay, planner_scratch_peek};
 
 pub fn draw(f: &mut Frame, ov: &PlannerOverlay) {
     let area = f.area();
@@ -33,7 +33,7 @@ pub fn draw(f: &mut Frame, ov: &PlannerOverlay) {
         .title_alignment(Alignment::Left)
         .title_bottom(Span::styled(
             "  Tab: switch panel  ·  a: add  ·  e: edit  ·  d: delete  ·  Space: toggle  ·  u/r: undo/redo  ·  q: close  ",
-            Style::default().fg(Color::Rgb(255, 255, 255)),
+            Style::default().fg(Color::Rgb(70, 70, 90)),
         ));
 
     f.render_widget(outer, popup);
@@ -365,7 +365,8 @@ fn draw_detail_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
 }
 
 fn draw_input_modal(f: &mut Frame, ov: &PlannerOverlay, parent: Rect, title: &str) {
-    let modal = centered_rect_abs(60, 7, parent);
+    // 13 rows: border×2 + pad×2 + 3×(label+field) + hint
+    let modal = centered_rect_abs(70, 13, parent);
     f.render_widget(Clear, modal);
 
     let block = Block::default()
@@ -382,41 +383,85 @@ fn draw_input_modal(f: &mut Frame, ov: &PlannerOverlay, parent: Rect, title: &st
 
     f.render_widget(block, modal);
 
-    let input_area = Rect {
-        x: modal.x + 2,
-        y: modal.y + 2,
-        width: modal.width.saturating_sub(4),
-        height: 1,
+    // Read all three stored values from the thread-local scratch
+    let (scratch_title, scratch_tags, scratch_desc) = planner_scratch_peek();
+
+    // For the active field, input_buf holds the live-edited value.
+    // For inactive fields, we read from scratch.
+    let (title_val, tags_val, desc_val) = match ov.input_field {
+        InputField::Title       => (ov.input_buf.as_str(), scratch_tags.as_str(),  scratch_desc.as_str()),
+        InputField::Tags        => (scratch_title.as_str(), ov.input_buf.as_str(), scratch_desc.as_str()),
+        InputField::Description => (scratch_title.as_str(), scratch_tags.as_str(),  ov.input_buf.as_str()),
     };
 
-    // Build cursor
-    let before = &ov.input_buf[..ov.input_cursor];
-    let cursor_ch = ov.input_buf.chars().nth(ov.input_cursor).map(|c| c.to_string()).unwrap_or_else(|| " ".to_string());
-    let after = if ov.input_cursor < ov.input_buf.len() {
-        &ov.input_buf[ov.input_cursor + cursor_ch.len().min(ov.input_buf.len() - ov.input_cursor)..]
-    } else {
-        ""
+    // Build a single row: label + text with cursor if active, plain text if not
+    let make_row = |buf: &str, cursor: usize, label: &str, active: bool| -> Line {
+        let label_style = if active {
+            Style::default().fg(Color::Rgb(200, 180, 255)).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(70, 60, 100))
+        };
+        let text_style = if active {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::Rgb(100, 90, 130))
+        };
+
+        if active {
+            let before = &buf[..cursor];
+            let cursor_ch = buf.chars().nth(cursor)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| " ".to_string());
+            let after_start = cursor + cursor_ch.len().min(buf.len().saturating_sub(cursor));
+            let after = if after_start <= buf.len() { &buf[after_start..] } else { "" };
+
+            Line::from(vec![
+                Span::styled(format!("  {}", label), label_style),
+                Span::styled(before.to_string(), text_style),
+                Span::styled(cursor_ch, Style::default().fg(Color::Black).bg(Color::White)),
+                Span::styled(after.to_string(), text_style),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(format!("  {}", label), label_style),
+                Span::styled(buf.to_string(), text_style),
+            ])
+        }
     };
 
-    let line = Line::from(vec![
-        Span::styled("  Title:  ", Style::default().fg(Color::Rgb(120, 100, 200))),
-        Span::styled(before.to_string(), Style::default().fg(Color::White)),
-        Span::styled(cursor_ch, Style::default().fg(Color::Black).bg(Color::White)),
-        Span::styled(after.to_string(), Style::default().fg(Color::White)),
+    let cursor = ov.input_cursor;
+    let fields = Paragraph::new(vec![
+        Line::from(""),
+        make_row(title_val, if ov.input_field == InputField::Title { cursor } else { title_val.len() },
+                 "Title*  : ", ov.input_field == InputField::Title),
+        Line::from(""),
+        make_row(tags_val,  if ov.input_field == InputField::Tags  { cursor } else { tags_val.len() },
+                 "Tags    : ", ov.input_field == InputField::Tags),
+        Line::from(""),
+        make_row(desc_val,  if ov.input_field == InputField::Description { cursor } else { desc_val.len() },
+                 "Desc    : ", ov.input_field == InputField::Description),
     ]);
 
-    f.render_widget(Paragraph::new(line), input_area);
+    let fields_area = Rect {
+        x: modal.x + 1,
+        y: modal.y + 1,
+        width: modal.width.saturating_sub(2),
+        height: modal.height.saturating_sub(3),
+    };
+    f.render_widget(fields, fields_area);
 
     let hint_area = Rect {
         x: modal.x + 2,
-        y: modal.y + 4,
+        y: modal.y + modal.height.saturating_sub(2),
         width: modal.width.saturating_sub(4),
         height: 1,
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
+            Span::styled("Enter/Tab ", Style::default().fg(Color::Rgb(160, 130, 255))),
+            Span::styled("next field  ", Style::default().fg(Color::Rgb(80, 80, 100))),
             Span::styled("Enter ", Style::default().fg(Color::Rgb(160, 130, 255))),
-            Span::styled("confirm  ", Style::default().fg(Color::Rgb(80, 80, 100))),
+            Span::styled("(on Desc) confirm  ", Style::default().fg(Color::Rgb(80, 80, 100))),
             Span::styled("Esc ", Style::default().fg(Color::Rgb(160, 130, 255))),
             Span::styled("cancel", Style::default().fg(Color::Rgb(80, 80, 100))),
         ])),

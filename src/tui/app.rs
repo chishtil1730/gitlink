@@ -159,7 +159,7 @@ pub struct App {
     pub cmd_history: Vec<String>,
     pub history_index: Option<usize>,
     pub overlay: Option<Overlay>,
-    pub needs_full_redraw: bool,  // triggers terminal.clear() next frame after overlay closes
+    pub needs_full_redraw: bool,
     pending_command: Option<String>,
 }
 
@@ -542,6 +542,30 @@ pub fn handle_ignore_key(ov: &mut IgnoreOverlay, key: KeyEvent) {
 }
 
 // ─── Planner key handler ──────────────────────────────────────────────────────
+//
+// Field progression mirrors ui.rs prompt_new_task / prompt_edit_task:
+//   Title  →(Enter/Tab)→  Tags  →(Enter/Tab)→  Description  →(Enter)→ commit
+//
+// We need to remember the value of each field as the user moves forward.
+// PlannerOverlay only has one input_buf, so we stash the completed fields in
+// a thread-local scratch pad (no struct changes needed).
+
+use std::cell::RefCell;
+
+thread_local! {
+    // (title, tags_raw, description_raw)
+    static TASK_SCRATCH: RefCell<(String, String, String)> =
+        RefCell::new((String::new(), String::new(), String::new()));
+}
+
+/// Called by planner_overlay.rs to read the saved field values for rendering
+/// inactive fields in the input modal.  Returns (title, tags, description).
+pub fn planner_scratch_peek() -> (String, String, String) {
+    TASK_SCRATCH.with(|s| {
+        let sc = s.borrow();
+        (sc.0.clone(), sc.1.clone(), sc.2.clone())
+    })
+}
 
 pub fn handle_planner_key(ov: &mut PlannerOverlay, key: KeyEvent) -> bool {
     use PlannerMode::*;
@@ -576,12 +600,18 @@ pub fn handle_planner_key(ov: &mut PlannerOverlay, key: KeyEvent) -> bool {
                 ov.input_field = InputField::Title;
                 ov.input_buf.clear();
                 ov.input_cursor = 0;
+                TASK_SCRATCH.with(|s| *s.borrow_mut() = (String::new(), String::new(), String::new()));
             }
             KeyCode::Char('e') if ov.focus == List => {
                 if let Some(task) = ov.tasks.get(ov.selected) {
                     ov.mode = EditingTask;
                     ov.input_field = InputField::Title;
-                    ov.input_buf = task.title.clone();
+                    let title = task.title.clone();
+                    let tags  = task.tags.join(", ");
+                    let desc  = task.description.clone().unwrap_or_default();
+                    // Pre-load all three into scratch; show title in input_buf first
+                    TASK_SCRATCH.with(|s| *s.borrow_mut() = (title.clone(), tags, desc));
+                    ov.input_buf = title;
                     ov.input_cursor = ov.input_buf.len();
                 }
             }
@@ -601,44 +631,140 @@ pub fn handle_planner_key(ov: &mut PlannerOverlay, key: KeyEvent) -> bool {
             }
             _ => {}
         },
+
         AddingTask | EditingTask => match key.code {
-            KeyCode::Esc => { ov.mode = Normal; ov.input_buf.clear(); }
-            KeyCode::Enter => {
-                let title = ov.input_buf.trim().to_string();
-                if !title.is_empty() {
-                    if ov.mode == AddingTask {
-                        let task = Task::new(title);
-                        ov.history.push(crate::planner::history::Action::Add { task: task.clone() });
-                        ov.tasks.push(task);
-                        ov.selected = ov.tasks.len() - 1;
-                    } else if let Some(task) = ov.tasks.get_mut(ov.selected) {
-                        let old = task.title.clone();
-                        ov.history.push(crate::planner::history::Action::UpdateTitle {
-                            id: task.id.clone(),
-                            old_title: old,
-                            new_title: title.clone(),
-                        });
-                        task.update_title(title);
-                    }
-                    ov.save();
-                }
+            KeyCode::Esc => {
                 ov.mode = Normal;
                 ov.input_buf.clear();
+                ov.input_cursor = 0;
+                TASK_SCRATCH.with(|s| *s.borrow_mut() = (String::new(), String::new(), String::new()));
             }
+
+            KeyCode::Enter | KeyCode::Tab => {
+                match ov.input_field {
+                    // ── Title field ──────────────────────────────────────────
+                    InputField::Title => {
+                        if !ov.input_buf.trim().is_empty() {
+                            // Save title, load tags into buf
+                            let saved = ov.input_buf.clone();
+                            TASK_SCRATCH.with(|s| {
+                                let mut sc = s.borrow_mut();
+                                sc.0 = saved;
+                                ov.input_buf = sc.1.clone(); // pre-fill tags (empty for add, existing for edit)
+                            });
+                            ov.input_cursor = ov.input_buf.len();
+                            ov.input_field = InputField::Tags;
+                        }
+                        // If title is empty, do nothing (keep focus on Title)
+                    }
+
+                    // ── Tags field ───────────────────────────────────────────
+                    InputField::Tags => {
+                        // Tags are optional, always advance
+                        let saved = ov.input_buf.clone();
+                        TASK_SCRATCH.with(|s| {
+                            let mut sc = s.borrow_mut();
+                            sc.1 = saved;
+                            ov.input_buf = sc.2.clone(); // pre-fill desc (empty for add, existing for edit)
+                        });
+                        ov.input_cursor = ov.input_buf.len();
+                        ov.input_field = InputField::Description;
+                    }
+
+                    // ── Description field ────────────────────────────────────
+                    InputField::Description => {
+                        if key.code == KeyCode::Tab {
+                            // Tab wraps back to Title
+                            let saved = ov.input_buf.clone();
+                            TASK_SCRATCH.with(|s| {
+                                let mut sc = s.borrow_mut();
+                                sc.2 = saved;
+                                ov.input_buf = sc.0.clone();
+                            });
+                            ov.input_cursor = ov.input_buf.len();
+                            ov.input_field = InputField::Title;
+                        } else {
+                            // Enter — commit the task
+                            let desc_val = ov.input_buf.trim().to_string();
+                            TASK_SCRATCH.with(|s| s.borrow_mut().2 = desc_val);
+
+                            TASK_SCRATCH.with(|s| {
+                                let sc = s.borrow();
+                                let title = sc.0.trim().to_string();
+                                if title.is_empty() { return; }
+
+                                let tags: Vec<String> = sc.1
+                                    .split(',')
+                                    .map(|t| t.trim().to_string())
+                                    .filter(|t| !t.is_empty())
+                                    .collect();
+
+                                let description = {
+                                    let d = sc.2.trim().to_string();
+                                    if d.is_empty() { None } else { Some(d) }
+                                };
+
+                                if ov.mode == AddingTask {
+                                    let mut task = Task::new(title);
+                                    task.set_tags(tags);
+                                    task.update_description(description);
+                                    ov.history.push(crate::planner::history::Action::Add { task: task.clone() });
+                                    ov.tasks.push(task);
+                                    ov.selected = ov.tasks.len() - 1;
+                                } else if let Some(task) = ov.tasks.get_mut(ov.selected) {
+                                    let old_title = task.title.clone();
+                                    let old_desc  = task.description.clone();
+                                    let old_tags  = task.tags.clone();
+                                    ov.history.push(crate::planner::history::Action::UpdateTitle {
+                                        id: task.id.clone(),
+                                        old_title,
+                                        new_title: title.clone(),
+                                    });
+                                    ov.history.push(crate::planner::history::Action::UpdateDescription {
+                                        id: task.id.clone(),
+                                        old_desc,
+                                        new_desc: description.clone(),
+                                    });
+                                    ov.history.push(crate::planner::history::Action::UpdateTags {
+                                        id: task.id.clone(),
+                                        old_tags,
+                                        new_tags: tags.clone(),
+                                    });
+                                    task.update_title(title);
+                                    task.update_description(description);
+                                    task.set_tags(tags);
+                                }
+                                ov.save();
+                            });
+
+                            ov.mode = Normal;
+                            ov.input_buf.clear();
+                            ov.input_cursor = 0;
+                            TASK_SCRATCH.with(|s| *s.borrow_mut() = (String::new(), String::new(), String::new()));
+                        }
+                    }
+                }
+            }
+
             KeyCode::Backspace => {
                 if ov.input_cursor > 0 {
                     ov.input_cursor -= 1;
                     ov.input_buf.remove(ov.input_cursor);
                 }
             }
-            KeyCode::Left => { if ov.input_cursor > 0 { ov.input_cursor -= 1; } }
-            KeyCode::Right => { if ov.input_cursor < ov.input_buf.len() { ov.input_cursor += 1; } }
+            KeyCode::Left => {
+                if ov.input_cursor > 0 { ov.input_cursor -= 1; }
+            }
+            KeyCode::Right => {
+                if ov.input_cursor < ov.input_buf.len() { ov.input_cursor += 1; }
+            }
             KeyCode::Char(c) => {
                 ov.input_buf.insert(ov.input_cursor, c);
                 ov.input_cursor += 1;
             }
             _ => {}
         },
+
         ConfirmDelete => match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
                 if ov.selected < ov.tasks.len() {
