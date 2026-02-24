@@ -4,7 +4,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 
-pub fn render(input: &str, cursor_pos: usize, is_executing: bool) -> Paragraph<'static> {
+pub fn render(input: &str, cursor_pos: usize, _is_executing: bool) -> Paragraph<'static> {
     let prompt = Span::styled(
         "> ",
         Style::default()
@@ -24,14 +24,9 @@ pub fn render(input: &str, cursor_pos: usize, is_executing: bool) -> Paragraph<'
         String::new()
     };
 
+    // Plain white text — real cursor is positioned by f.set_cursor_position() in ui.rs
     let before = Span::styled(prefix, Style::default().fg(Color::White));
-    let cursor = Span::styled(
-        cursor_ch,
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    );
+    let cursor = Span::styled(cursor_ch, Style::default().fg(Color::White));
     let after = Span::styled(suffix, Style::default().fg(Color::White));
 
     let placeholder = Span::styled(
@@ -39,34 +34,17 @@ pub fn render(input: &str, cursor_pos: usize, is_executing: bool) -> Paragraph<'
         Style::default().fg(Color::Rgb(80, 80, 90)),
     );
 
-    let content = if input.is_empty() && !is_executing {
+    let content = if input.is_empty() {
         Line::from(vec![prompt, placeholder])
-    } else if is_executing {
-        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        // Use a static counter trick via the input string being empty during execution
-        let frame = spinner_frames[0]; // will be updated in ui.rs with elapsed
-        Line::from(vec![
-            prompt,
-            Span::styled(
-                format!("{} Executing...", frame),
-                Style::default().fg(Color::Rgb(120, 180, 255)),
-            ),
-        ])
     } else {
         Line::from(vec![prompt, before, cursor, after])
-    };
-
-    let border_color = if is_executing {
-        Color::Rgb(120, 180, 255)
-    } else {
-        Color::Rgb(55, 55, 65)
     };
 
     Paragraph::new(content).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(border_color))
+            .border_style(Style::default().fg(Color::Rgb(55, 55, 65)))
             .style(Style::default().bg(Color::Rgb(18, 18, 24))),
     )
 }
@@ -75,35 +53,39 @@ pub fn render_with_spinner(
     input: &str,
     cursor_pos: usize,
     is_executing: bool,
-    elapsed: f32,
+    _elapsed: f32,
 ) -> Paragraph<'static> {
-    let prompt = Span::styled(
-        "> ",
-        Style::default()
-            .fg(Color::Rgb(160, 120, 220))
-            .add_modifier(Modifier::BOLD),
-    );
-
-    if is_executing {
-        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let frame_idx = (elapsed * 10.0) as usize % spinner_frames.len();
-        let frame = spinner_frames[frame_idx];
-
-        return Paragraph::new(Line::from(vec![
-            prompt,
-            Span::styled(
-                format!("{} Executing...", frame),
-                Style::default().fg(Color::Rgb(120, 180, 255)),
-            ),
-        ]))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::Rgb(120, 180, 255)))
-                    .style(Style::default().bg(Color::Rgb(18, 18, 24))),
-            );
-    }
-
     render(input, cursor_pos, is_executing)
+}
+
+/// Renders the standalone spinner bar shown above the dialog box during execution.
+pub fn render_spinner_bar(elapsed: f32) -> Paragraph<'static> {
+    let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let frame = spinner_frames[(elapsed * 10.0) as usize % spinner_frames.len()];
+
+    Paragraph::new(Line::from(vec![
+        Span::styled(
+            format!(" {} ", frame),
+            Style::default()
+                .fg(Color::Rgb(0, 220, 120))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "Executing",
+            Style::default()
+                .fg(Color::Rgb(0, 200, 100))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "...",
+            Style::default().fg(Color::Rgb(0, 160, 80)),
+        ),
+    ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Rgb(0, 160, 80)))
+                .style(Style::default().bg(Color::Rgb(10, 10, 14))),
+        )
 }
