@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::commands::{Command, COMMANDS};
@@ -160,6 +160,7 @@ pub struct App {
     pub history_index: Option<usize>,
     pub overlay: Option<Overlay>,
     pub needs_full_redraw: bool,
+    spin_start: Option<Instant>,
     pending_command: Option<String>,
 }
 
@@ -180,6 +181,7 @@ impl App {
             history_index: None,
             overlay: None,
             needs_full_redraw: false,
+            spin_start: None,
             pending_command: None,
         };
         app.outputs.push(OutputBlock {
@@ -397,6 +399,7 @@ impl App {
         }
 
         self.is_executing = true;
+        self.spin_start = Some(Instant::now());
         self.pending_command = Some(raw);
     }
 
@@ -414,12 +417,19 @@ impl App {
         }
     }
 
+    /// Seconds since this execution started. Always begins at 0.0 for each
+    /// new command so the spinner always animates from frame 0.
+    pub fn spin_elapsed(&self) -> f32 {
+        self.spin_start.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0)
+    }
+
     pub fn take_pending_command(&mut self) -> Option<String> {
         self.pending_command.take()
     }
 
     pub fn push_output(&mut self, block: OutputBlock) {
         self.is_executing = false;
+        self.spin_start = None;
         self.outputs.push(block);
         self.output_scroll = 0.0;
     }

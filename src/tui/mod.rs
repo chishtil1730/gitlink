@@ -5,6 +5,7 @@ pub mod event;
 pub mod ui;
 
 use std::io;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use crossterm::{
@@ -42,7 +43,26 @@ fn run_loop(
     app: &mut App,
     events: &EventHandler,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // When a router command is running in the background, its result arrives here.
+    let mut pending_result: Option<mpsc::Receiver<OutputBlock>> = None;
+    // Tracks when the current execution started so the spinner counts from 0.
+    let mut exec_start: Option<std::time::Instant> = None;
+
     loop {
+        // ── Poll for a finished background command ────────────────────────────
+        if let Some(ref rx) = pending_result {
+            if let Ok(output) = rx.try_recv() {
+                app.push_output(output);
+                pending_result = None;
+                exec_start = None;
+            }
+        }
+
+        // Compute how long the current command has been running (0.0 if idle).
+        let spin_elapsed = exec_start
+            .map(|t| t.elapsed().as_secs_f32())
+            .unwrap_or(0.0);
+
         // One-shot hard terminal clear to flush ghost border chars left by
         // ratatui's double-buffer differ when an overlay closes.
         if app.needs_full_redraw {
@@ -50,7 +70,7 @@ fn run_loop(
             app.needs_full_redraw = false;
         }
 
-        terminal.draw(|f| ui::draw(f, app))?;
+        terminal.draw(|f| ui::draw(f, app, spin_elapsed))?;
 
         match events.next()? {
             AppEvent::Tick => {
@@ -100,10 +120,18 @@ fn run_loop(
                             app.is_executing = false;
                         }
 
-                        // ── everything else → router ───────────────────────
+                        // ── everything else → router (non-blocking) ────────
                         _ => {
-                            let output = router::execute(&cmd);
-                            app.push_output(output);
+                            // Spawn router::execute on a blocking thread so the
+                            // main loop keeps ticking and the spinner animates.
+                            let (tx, rx) = mpsc::channel();
+                            let cmd_owned = cmd.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let output = router::execute(&cmd_owned);
+                                let _ = tx.send(output);
+                            });
+                            pending_result = Some(rx);
+                            exec_start = Some(std::time::Instant::now());
                         }
                     }
                 }

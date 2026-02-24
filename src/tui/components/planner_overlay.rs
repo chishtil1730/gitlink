@@ -22,18 +22,18 @@ pub fn draw(f: &mut Frame, ov: &PlannerOverlay) {
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Rgb(100, 80, 200)))
-        .style(Style::default().bg(Color::Rgb(10, 10, 16)))
+        .border_style(Style::default().fg(Color::Rgb(70, 80, 95))) // Steel Gray
+        .style(Style::default().bg(Color::Rgb(15, 17, 20)))     // Deep Slate
         .title(Span::styled(
             format!("  📋 GitLink Planner  ·  {}/{} done  ", done, total),
             Style::default()
-                .fg(Color::Rgb(160, 130, 255))
+                .fg(Color::Rgb(100, 149, 237)) // Cornflower Blue
                 .add_modifier(Modifier::BOLD),
         ))
         .title_alignment(Alignment::Left)
         .title_bottom(Span::styled(
             "  Tab: switch panel  ·  a: add  ·  e: edit  ·  d: delete  ·  Space: toggle  ·  u/r: undo/redo  ·  q: close  ",
-            Style::default().fg(Color::Rgb(70, 70, 90)),
+            Style::default().fg(Color::Rgb(140, 150, 170)), // Muted Silver
         ));
 
     f.render_widget(outer, popup);
@@ -72,16 +72,16 @@ pub fn draw(f: &mut Frame, ov: &PlannerOverlay) {
 fn draw_list_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
     let is_focused = ov.focus == PlannerFocus::List;
     let border_color = if is_focused {
-        Color::Rgb(160, 130, 255)
+        Color::Rgb(100, 149, 237) // Focused: Blue
     } else {
-        Color::Rgb(50, 50, 65)
+        Color::Rgb(45, 50, 60)    // Unfocused: Dimmed Gray
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .style(Style::default().bg(Color::Rgb(10, 10, 16)))
+        .style(Style::default().bg(Color::Rgb(15, 17, 20)))
         .title(Span::styled(
             "  Tasks  ",
             Style::default().fg(border_color).add_modifier(Modifier::BOLD),
@@ -101,12 +101,12 @@ fn draw_list_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
             Line::from(""),
             Line::from(Span::styled(
                 "No tasks yet.",
-                Style::default().fg(Color::Rgb(70, 70, 90)),
+                Style::default().fg(Color::Rgb(80, 85, 100)),
             )),
             Line::from(""),
             Line::from(Span::styled(
                 "Press 'a' to add one.",
-                Style::default().fg(Color::Rgb(100, 80, 200)),
+                Style::default().fg(Color::Rgb(100, 149, 237)),
             )),
         ])
             .alignment(Alignment::Center);
@@ -126,36 +126,35 @@ fn draw_list_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
             let is_sel = real_idx == ov.selected;
 
             let pointer = if is_sel && ov.focus == PlannerFocus::List {
-                Span::styled("▶ ", Style::default().fg(Color::Rgb(160, 130, 255)))
+                Span::styled("▶ ", Style::default().fg(Color::Rgb(100, 149, 237)))
             } else {
                 Span::raw("  ")
             };
 
             let checkbox = if task.completed {
-                Span::styled("✔ ", Style::default().fg(Color::Rgb(80, 200, 120)))
+                Span::styled("✔ ", Style::default().fg(Color::Rgb(46, 139, 87))) // Sea Green
             } else {
-                Span::styled("○ ", Style::default().fg(Color::Rgb(100, 100, 130)))
+                Span::styled("○ ", Style::default().fg(Color::Rgb(100, 110, 130)))
             };
 
             let title_style = if task.completed {
                 Style::default()
-                    .fg(Color::Rgb(80, 80, 100))
+                    .fg(Color::Rgb(75, 85, 100))
                     .add_modifier(Modifier::CROSSED_OUT)
             } else if is_sel {
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Rgb(200, 200, 215))
+                Style::default().fg(Color::Rgb(200, 205, 215))
             };
 
             let bg = if is_sel && ov.focus == PlannerFocus::List {
-                Style::default().bg(Color::Rgb(30, 25, 50))
+                Style::default().bg(Color::Rgb(35, 40, 50)) // Selected background highlight
             } else {
                 Style::default()
             };
 
-            // Truncate title to fit
             let max_title = (list_area.width as usize).saturating_sub(6);
             let title_text = if task.title.len() > max_title {
                 format!("{}…", &task.title[..max_title.saturating_sub(1)])
@@ -163,12 +162,8 @@ fn draw_list_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
                 task.title.clone()
             };
 
-            Line::styled(
-                format!(""),
-                bg,
-            );
+            Line::styled(format!(""), bg);
 
-            // Build tag badges
             let tags_span = if !task.tags.is_empty() {
                 let tag_str = task.tags
                     .iter()
@@ -177,7 +172,7 @@ fn draw_list_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
                     .join(" ");
                 Span::styled(
                     format!("  {}", tag_str),
-                    Style::default().fg(Color::Rgb(120, 100, 200)),
+                    Style::default().fg(Color::Rgb(120, 160, 200)), // Soft Blue
                 )
             } else {
                 Span::raw("")
@@ -188,21 +183,16 @@ fn draw_list_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
                 checkbox,
                 Span::styled(title_text, title_style),
                 tags_span,
-            ])
+            ]).style(bg)
         })
         .collect();
 
     f.render_widget(Paragraph::new(lines), list_area);
 
-    // Scrollbar hint
     if ov.tasks.len() > visible_h {
-        let scroll_pct = if ov.tasks.len() > 1 {
-            (ov.selected * 100) / (ov.tasks.len() - 1)
-        } else { 0 };
-
         let hint = Paragraph::new(Line::from(Span::styled(
             format!(" {}/{} ", ov.selected + 1, ov.tasks.len()),
-            Style::default().fg(Color::Rgb(70, 70, 90)),
+            Style::default().fg(Color::Rgb(80, 85, 100)),
         )))
             .alignment(Alignment::Right);
 
@@ -219,16 +209,16 @@ fn draw_list_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
 fn draw_detail_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
     let is_focused = ov.focus == PlannerFocus::Detail;
     let border_color = if is_focused {
-        Color::Rgb(160, 130, 255)
+        Color::Rgb(100, 149, 237)
     } else {
-        Color::Rgb(50, 50, 65)
+        Color::Rgb(45, 50, 60)
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .style(Style::default().bg(Color::Rgb(12, 12, 18)))
+        .style(Style::default().bg(Color::Rgb(18, 20, 24))) // Slightly darker for depth
         .title(Span::styled(
             "  Detail  ",
             Style::default().fg(border_color).add_modifier(Modifier::BOLD),
@@ -248,7 +238,7 @@ fn draw_detail_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
         None => {
             let empty = Paragraph::new(Span::styled(
                 "Select a task to view details",
-                Style::default().fg(Color::Rgb(70, 70, 90)),
+                Style::default().fg(Color::Rgb(80, 85, 100)),
             ))
                 .alignment(Alignment::Center);
             f.render_widget(empty, detail_area);
@@ -258,16 +248,15 @@ fn draw_detail_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
 
     let status_str = if task.completed { "✔ Completed" } else { "○ Pending" };
     let status_color = if task.completed {
-        Color::Rgb(80, 200, 120)
+        Color::Rgb(46, 139, 87)
     } else {
-        Color::Rgb(160, 130, 255)
+        Color::Rgb(100, 149, 237)
     };
 
     let created = task.created_at.with_timezone(&Local);
     let updated = task.updated_at.with_timezone(&Local);
 
     let mut lines: Vec<Line> = vec![
-        // Title
         Line::from(vec![
             Span::styled(
                 task.title.clone(),
@@ -277,28 +266,26 @@ fn draw_detail_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
             ),
         ]),
         Line::from(""),
-        // Status badge
         Line::from(vec![
-            Span::styled("Status   ", Style::default().fg(Color::Rgb(100, 100, 130))),
+            Span::styled("Status   ", Style::default().fg(Color::Rgb(110, 115, 130))),
             Span::styled(
                 status_str,
                 Style::default().fg(status_color).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
-        // Dates
         Line::from(vec![
-            Span::styled("Created  ", Style::default().fg(Color::Rgb(100, 100, 130))),
+            Span::styled("Created  ", Style::default().fg(Color::Rgb(110, 115, 130))),
             Span::styled(
                 created.format("%Y-%m-%d  %H:%M").to_string(),
-                Style::default().fg(Color::Rgb(180, 180, 200)),
+                Style::default().fg(Color::Rgb(170, 175, 190)),
             ),
         ]),
         Line::from(vec![
-            Span::styled("Updated  ", Style::default().fg(Color::Rgb(100, 100, 130))),
+            Span::styled("Updated  ", Style::default().fg(Color::Rgb(110, 115, 130))),
             Span::styled(
                 updated.format("%Y-%m-%d  %H:%M").to_string(),
-                Style::default().fg(Color::Rgb(180, 180, 200)),
+                Style::default().fg(Color::Rgb(170, 175, 190)),
             ),
         ]),
     ];
@@ -306,29 +293,28 @@ fn draw_detail_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
     if let Some(completed_at) = task.completed_at {
         let completed = completed_at.with_timezone(&Local);
         lines.push(Line::from(vec![
-            Span::styled("Completed ", Style::default().fg(Color::Rgb(100, 100, 130))),
+            Span::styled("Completed ", Style::default().fg(Color::Rgb(110, 115, 130))),
             Span::styled(
                 completed.format("%Y-%m-%d  %H:%M").to_string(),
-                Style::default().fg(Color::Rgb(80, 200, 120)),
+                Style::default().fg(Color::Rgb(46, 139, 87)),
             ),
         ]));
     }
 
     lines.push(Line::from(""));
 
-    // Tags
     if !task.tags.is_empty() {
         lines.push(Line::from(Span::styled(
             "Tags",
-            Style::default().fg(Color::Rgb(100, 100, 130)),
+            Style::default().fg(Color::Rgb(110, 115, 130)),
         )));
         let tag_spans: Vec<Span> = task.tags.iter().flat_map(|t| {
             vec![
                 Span::styled(
                     format!(" {} ", t),
                     Style::default()
-                        .fg(Color::Rgb(200, 180, 255))
-                        .bg(Color::Rgb(40, 30, 70))
+                        .fg(Color::Rgb(220, 225, 235))
+                        .bg(Color::Rgb(40, 50, 65))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
@@ -339,72 +325,65 @@ fn draw_detail_panel(f: &mut Frame, ov: &PlannerOverlay, area: Rect) {
         lines.push(Line::from(""));
     }
 
-    // Description
     if let Some(desc) = &task.description {
         lines.push(Line::from(Span::styled(
             "Description",
-            Style::default().fg(Color::Rgb(100, 100, 130)),
+            Style::default().fg(Color::Rgb(110, 115, 130)),
         )));
         lines.push(Line::from(""));
         for dl in desc.lines() {
             lines.push(Line::from(Span::styled(
                 dl.to_string(),
-                Style::default().fg(Color::Rgb(200, 200, 215)),
+                Style::default().fg(Color::Rgb(190, 195, 210)),
             )));
         }
     }
 
-    // ID (dimmed, at bottom)
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         format!("ID  {}", &task.id[..8]),
-        Style::default().fg(Color::Rgb(50, 50, 70)),
+        Style::default().fg(Color::Rgb(60, 65, 80)),
     )));
 
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), detail_area);
 }
 
 fn draw_input_modal(f: &mut Frame, ov: &PlannerOverlay, parent: Rect, title: &str) {
-    // 13 rows: border×2 + pad×2 + 3×(label+field) + hint
     let modal = centered_rect_abs(70, 13, parent);
     f.render_widget(Clear, modal);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Rgb(160, 130, 255)))
-        .style(Style::default().bg(Color::Rgb(18, 15, 30)))
+        .border_style(Style::default().fg(Color::Rgb(100, 149, 237)))
+        .style(Style::default().bg(Color::Rgb(22, 25, 30)))
         .title(Span::styled(
             title,
             Style::default()
-                .fg(Color::Rgb(200, 180, 255))
+                .fg(Color::Rgb(220, 230, 255))
                 .add_modifier(Modifier::BOLD),
         ));
 
     f.render_widget(block, modal);
 
-    // Read all three stored values from the thread-local scratch
     let (scratch_title, scratch_tags, scratch_desc) = planner_scratch_peek();
 
-    // For the active field, input_buf holds the live-edited value.
-    // For inactive fields, we read from scratch.
     let (title_val, tags_val, desc_val) = match ov.input_field {
         InputField::Title       => (ov.input_buf.as_str(), scratch_tags.as_str(),  scratch_desc.as_str()),
         InputField::Tags        => (scratch_title.as_str(), ov.input_buf.as_str(), scratch_desc.as_str()),
         InputField::Description => (scratch_title.as_str(), scratch_tags.as_str(),  ov.input_buf.as_str()),
     };
 
-    // Build a single row: label + text with cursor if active, plain text if not
     let make_row = |buf: &str, cursor: usize, label: &str, active: bool| -> Line {
         let label_style = if active {
-            Style::default().fg(Color::Rgb(200, 180, 255)).add_modifier(Modifier::BOLD)
+            Style::default().fg(Color::Rgb(100, 149, 237)).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Rgb(70, 60, 100))
+            Style::default().fg(Color::Rgb(90, 95, 110))
         };
         let text_style = if active {
             Style::default().fg(Color::White)
         } else {
-            Style::default().fg(Color::Rgb(100, 90, 130))
+            Style::default().fg(Color::Rgb(120, 125, 140))
         };
 
         if active {
@@ -418,7 +397,7 @@ fn draw_input_modal(f: &mut Frame, ov: &PlannerOverlay, parent: Rect, title: &st
             Line::from(vec![
                 Span::styled(format!("  {}", label), label_style),
                 Span::styled(before.to_string(), text_style),
-                Span::styled(cursor_ch, Style::default().fg(Color::Black).bg(Color::White)),
+                Span::styled(cursor_ch, Style::default().fg(Color::Black).bg(Color::Rgb(200, 205, 255))),
                 Span::styled(after.to_string(), text_style),
             ])
         } else {
@@ -433,7 +412,7 @@ fn draw_input_modal(f: &mut Frame, ov: &PlannerOverlay, parent: Rect, title: &st
     let fields = Paragraph::new(vec![
         Line::from(""),
         make_row(title_val, if ov.input_field == InputField::Title { cursor } else { title_val.len() },
-                 "Title*  : ", ov.input_field == InputField::Title),
+                 "Title* : ", ov.input_field == InputField::Title),
         Line::from(""),
         make_row(tags_val,  if ov.input_field == InputField::Tags  { cursor } else { tags_val.len() },
                  "Tags    : ", ov.input_field == InputField::Tags),
@@ -458,12 +437,12 @@ fn draw_input_modal(f: &mut Frame, ov: &PlannerOverlay, parent: Rect, title: &st
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("Enter/Tab ", Style::default().fg(Color::Rgb(160, 130, 255))),
-            Span::styled("next field  ", Style::default().fg(Color::Rgb(80, 80, 100))),
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(160, 130, 255))),
-            Span::styled("(on Desc) confirm  ", Style::default().fg(Color::Rgb(80, 80, 100))),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(160, 130, 255))),
-            Span::styled("cancel", Style::default().fg(Color::Rgb(80, 80, 100))),
+            Span::styled("Enter/Tab ", Style::default().fg(Color::Rgb(100, 149, 237))),
+            Span::styled("next field  ", Style::default().fg(Color::Rgb(90, 95, 110))),
+            Span::styled("Enter ", Style::default().fg(Color::Rgb(100, 149, 237))),
+            Span::styled("(on Desc) confirm  ", Style::default().fg(Color::Rgb(90, 95, 110))),
+            Span::styled("Esc ", Style::default().fg(Color::Rgb(100, 149, 237))),
+            Span::styled("cancel", Style::default().fg(Color::Rgb(90, 95, 110))),
         ])),
         hint_area,
     );
@@ -477,12 +456,12 @@ fn draw_confirm_modal(f: &mut Frame, ov: &PlannerOverlay, parent: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Rgb(220, 80, 80)))
-        .style(Style::default().bg(Color::Rgb(20, 10, 12)))
+        .border_style(Style::default().fg(Color::Rgb(240, 110, 110))) // Soft Red
+        .style(Style::default().bg(Color::Rgb(28, 20, 20)))
         .title(Span::styled(
             "  ⚠ Delete Task  ",
             Style::default()
-                .fg(Color::Rgb(220, 80, 80))
+                .fg(Color::Rgb(240, 110, 110))
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -504,16 +483,16 @@ fn draw_confirm_modal(f: &mut Frame, ov: &PlannerOverlay, parent: Rect) {
 
     let lines = vec![
         Line::from(vec![
-            Span::styled("Delete  ", Style::default().fg(Color::Rgb(180, 180, 200))),
+            Span::styled("Delete  ", Style::default().fg(Color::Rgb(180, 185, 200))),
             Span::styled(trimmed, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled(" ?", Style::default().fg(Color::Rgb(180, 180, 200))),
+            Span::styled(" ?", Style::default().fg(Color::Rgb(180, 185, 200))),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("y / Enter ", Style::default().fg(Color::Rgb(220, 80, 80)).add_modifier(Modifier::BOLD)),
-            Span::styled("confirm  ", Style::default().fg(Color::Rgb(100, 80, 80))),
-            Span::styled("any other key ", Style::default().fg(Color::Rgb(100, 100, 120))),
-            Span::styled("cancel", Style::default().fg(Color::Rgb(100, 100, 120))),
+            Span::styled("y / Enter ", Style::default().fg(Color::Rgb(240, 110, 110)).add_modifier(Modifier::BOLD)),
+            Span::styled("confirm  ", Style::default().fg(Color::Rgb(120, 90, 90))),
+            Span::styled("any other key ", Style::default().fg(Color::Rgb(100, 105, 120))),
+            Span::styled("cancel", Style::default().fg(Color::Rgb(100, 105, 120))),
         ]),
     ];
 
