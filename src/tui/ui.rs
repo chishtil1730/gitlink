@@ -6,13 +6,21 @@ use ratatui::{
 };
 
 use super::{
-    app::App,
-    components::{dialog_box, logo, output_block, suggestion_list},
+    app::{App, Overlay},
+    components::{
+        dialog_box,
+        logo,
+        output_block,
+        planner_overlay,
+        scanner_overlay,
+        suggestion_list,
+        ignore_overlay,
+    },
 };
 
 const MAX_SUGGESTIONS_SHOWN: usize = 8;
 
-/// Padding rows above the logo. Change this to move the logo down.
+/// Padding rows above the logo. Increase to push logo down.
 const LOGO_TOP_PADDING: u16 = 2;
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -32,62 +40,75 @@ pub fn draw(f: &mut Frame, app: &App) {
         0
     };
 
-    // Total fixed bottom area (dialog + suggestions)
-    let fixed_bottom = dialog_h + suggestion_h;
-
-    // Output area: everything between logo block and dialog
     let logo_block_h = LOGO_TOP_PADDING + logo_h;
+    let fixed_bottom = dialog_h + suggestion_h;
     let output_h = area.height.saturating_sub(logo_block_h + fixed_bottom);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(LOGO_TOP_PADDING), // top padding above logo
-            Constraint::Length(logo_h),           // logo
-            Constraint::Length(output_h),         // scrollable output
-            Constraint::Length(dialog_h),         // dialog box
-            Constraint::Length(suggestion_h),     // suggestions (0 when hidden)
+            Constraint::Length(LOGO_TOP_PADDING),
+            Constraint::Length(logo_h),
+            Constraint::Length(output_h),
+            Constraint::Length(dialog_h),
+            Constraint::Length(suggestion_h),
         ])
         .split(area);
 
     // --- Logo ---
-    f.render_widget(logo::render(app.elapsed), chunks[1]);
+    // If scroll >= 20.0, we simulate the aberration by passing a jittered elapsed time
+    // to the existing renderer without changing its signature in logo.rs.
+    let time_param = if app.output_scroll >= 20.0 {
+        app.elapsed * 1.5 // Speed up/jitter animation to simulate aberration
+    } else {
+        app.elapsed
+    };
+
+    f.render_widget(logo::render(time_param), chunks[1]);
 
     // --- Output area ---
-    // output_scroll == 0 means "follow bottom". Scrolling UP increases output_scroll.
     let output_lines = output_block::render_lines(&app.outputs);
     let total_lines = output_lines.len() as u16;
     let visible_h = chunks[2].height;
 
-    // How far from the bottom the user has scrolled (0 = pinned to bottom)
-    let clamped_scroll = app.output_scroll.min(total_lines.saturating_sub(visible_h));
-    // ratatui scroll(row, col): row 0 = top of content
-    // We want bottom-pinned by default, so scroll row = max_scroll - user_scroll
+    // Handle f32 scroll value for TUI rendering
     let max_scroll = total_lines.saturating_sub(visible_h);
-    let scroll_row = max_scroll.saturating_sub(clamped_scroll);
+    let current_scroll_u16 = app.output_scroll as u16;
+    let clamped = current_scroll_u16.min(max_scroll);
+    let scroll_row = max_scroll.saturating_sub(clamped);
 
-    let output_widget = Paragraph::new(output_lines)
-        .scroll((scroll_row, 0))
-        .style(Style::default().bg(Color::Rgb(10, 10, 14)));
-
-    f.render_widget(output_widget, chunks[2]);
+    f.render_widget(
+        Paragraph::new(output_lines)
+            .scroll((scroll_row, 0))
+            .style(Style::default().bg(Color::Rgb(10, 10, 14))),
+        chunks[2],
+    );
 
     // --- Dialog box ---
-    let dialog = dialog_box::render_with_spinner(
-        &app.input,
-        app.cursor_pos,
-        app.is_executing,
-        app.elapsed,
+    f.render_widget(
+        dialog_box::render_with_spinner(&app.input, app.cursor_pos, app.is_executing, app.elapsed),
+        chunks[3],
     );
-    f.render_widget(dialog, chunks[3]);
 
     // --- Suggestion list ---
     if app.show_suggestions && !app.filtered_commands.is_empty() {
-        let suggestions = suggestion_list::render(
-            &app.filtered_commands,
-            app.selected_index,
-            MAX_SUGGESTIONS_SHOWN,
+        f.render_widget(
+            suggestion_list::render(&app.filtered_commands, app.selected_index, MAX_SUGGESTIONS_SHOWN),
+            chunks[4],
         );
-        f.render_widget(suggestions, chunks[4]);
+    }
+
+    // --- Overlays (drawn on top of everything) ---
+    match &app.overlay {
+        Some(Overlay::Scanner(ov)) => {
+            scanner_overlay::draw(f, ov);
+        }
+        Some(Overlay::Planner(ov)) => {
+            planner_overlay::draw(f, ov);
+        }
+        Some(Overlay::Ignore(ov)) => {
+            ignore_overlay::draw(f, ov);
+        }
+        None => {}
     }
 }

@@ -56,43 +56,46 @@ fn run_loop(
 
                 if let Some(cmd) = app.take_pending_command() {
                     let trimmed = cmd.trim_start_matches('/');
-                    let root = trimmed.split_whitespace().next().unwrap_or("");
+                    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                    let root = parts.first().copied().unwrap_or("");
+                    let sub = parts.get(1).copied().unwrap_or("");
 
-                    // Special: /plan exits TUI temporarily, runs planner, re-enters
-                    if root == "plan" {
-                        app.is_executing = false;
-                        disable_raw_mode()?;
-                        execute!(io::stdout(), LeaveAlternateScreen)?;
-                        terminal.show_cursor()?;
+                    match root {
+                        // ── /plan → open planner overlay ──────────────────
+                        "plan" => {
+                            app.open_planner_overlay();
+                        }
 
-                        let plan_result = crate::planner::ui::run_planner();
+                        // ── /scan → run scan then open scanner overlay ─────
+                        "scan" => {
+                            let findings = match sub {
+                                "history" => {
+                                    let mut f = crate::scanner::engine::scan_git_history(None);
+                                    let db = crate::scanner::ignore::load_ignore_db();
+                                    f.retain(|x| !db.ignored.iter().any(|i| i.fingerprint == x.fingerprint));
+                                    f
+                                }
+                                _ => {
+                                    let mut f = crate::scanner::engine::scan_directory(".");
+                                    let db = crate::scanner::ignore::load_ignore_db();
+                                    f.retain(|x| !db.ignored.iter().any(|i| i.fingerprint == x.fingerprint));
+                                    f
+                                }
+                            };
+                            app.open_scanner_overlay(findings);
+                        }
 
-                        enable_raw_mode()?;
-                        execute!(io::stdout(), EnterAlternateScreen)?;
-                        terminal.hide_cursor()?;
-                        terminal.clear()?;
+                        // ── /clear ─────────────────────────────────────────
+                        "clear" => {
+                            app.outputs.clear();
+                            app.is_executing = false;
+                        }
 
-                        let msg = match plan_result {
-                            Ok(_) => OutputBlock {
-                                kind: OutputKind::Success,
-                                content: "Planner session ended. Back in GitLink TUI.".to_string(),
-                            },
-                            Err(e) => OutputBlock {
-                                kind: OutputKind::Error,
-                                content: format!("Planner error: {}", e),
-                            },
-                        };
-                        app.push_output(msg);
-                        continue;
-                    }
-
-                    // Special: /clear
-                    let output = router::execute(&cmd);
-                    if output.kind == OutputKind::Info && output.content == "__CLEAR__" {
-                        app.outputs.clear();
-                        app.is_executing = false;
-                    } else {
-                        app.push_output(output);
+                        // ── everything else → router ───────────────────────
+                        _ => {
+                            let output = router::execute(&cmd);
+                            app.push_output(output);
+                        }
                     }
                 }
             }

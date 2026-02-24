@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{Read, Write};
+use std::fs::OpenOptions;
 use std::path::Path;
 
 const IGNORE_FILE: &str = ".gitlinkignore.json";
@@ -18,6 +20,8 @@ pub struct IgnoreDatabase {
     pub ignored: Vec<IgnoredItem>,
 }
 
+// ─── Data Access ─────────────────────────────────────────────────────────────
+
 pub fn load_ignore_db() -> IgnoreDatabase {
     if Path::new(IGNORE_FILE).exists() {
         match fs::read_to_string(IGNORE_FILE) {
@@ -35,6 +39,46 @@ pub fn save_ignore_db(db: &IgnoreDatabase) {
     }
 }
 
+// ─── TUI Specific Helpers ────────────────────────────────────────────────────
+
+/// Returns a formatted string of ignored items for the TUI output.
+pub fn get_ignored_list_string() -> String {
+    let db = load_ignore_db();
+
+    if db.ignored.is_empty() {
+        return "No ignored findings.".to_string();
+    }
+
+    let mut output = String::from("Ignored findings:\n\n");
+
+    for item in db.ignored {
+        let source_info = if item.source == "history" {
+            if let Some(commit) = &item.commit {
+                format!("(commit {})", &commit[..8.min(commit.len())])
+            } else {
+                "(history)".to_string()
+            }
+        } else {
+            "(working)".to_string()
+        };
+
+        output.push_str(&format!(
+            "  [{}] {} {}\n",
+            item.short_id,
+            item.variable,
+            source_info
+        ));
+    }
+    output
+}
+
+/// Clears the DB without printing to stdout (prevents TUI artifacts).
+pub fn clear_all_silent() {
+    save_ignore_db(&IgnoreDatabase::default());
+}
+
+// ─── Core Logic ──────────────────────────────────────────────────────────────
+
 pub fn add_ignored(item: IgnoredItem) {
     let mut db = load_ignore_db();
 
@@ -47,43 +91,11 @@ pub fn add_ignored(item: IgnoredItem) {
 }
 
 pub fn list_ignored() {
-    let db = load_ignore_db();
-
-    if db.ignored.is_empty() {
-        println!("No ignored findings.");
-        return;
-    }
-
-    println!("Ignored findings:\n");
-
-    for item in db.ignored {
-        if item.source == "history" {
-            if let Some(commit) = &item.commit {
-                println!(
-                    "[{}] {} (commit {})",
-                    item.short_id,
-                    item.variable,
-                    &commit[..8]
-                );
-            } else {
-                println!(
-                    "[{}] {} (history)",
-                    item.short_id,
-                    item.variable
-                );
-            }
-        } else {
-            println!(
-                "[{}] {} (working)",
-                item.short_id,
-                item.variable
-            );
-        }
-    }
+    println!("{}", get_ignored_list_string());
 }
 
 pub fn clear_all() {
-    save_ignore_db(&IgnoreDatabase::default());
+    clear_all_silent();
     println!("All ignored findings cleared.");
 }
 
@@ -102,9 +114,7 @@ pub fn remove_by_short_id(short_id: &str) {
     save_ignore_db(&db);
 }
 
-//to ensure .gitlink_ignore.json is ignored by git
-use std::fs::{OpenOptions};
-use std::io::{Write, Read};
+// ─── Git Integration ─────────────────────────────────────────────────────────
 
 pub fn ensure_gitignore_entry() {
     let gitignore_path = ".gitignore";
@@ -128,6 +138,7 @@ pub fn ensure_gitignore_entry() {
         .append(true)
         .open(gitignore_path)
     {
+        // Add a newline before our entry to ensure it's on a new line
         let _ = writeln!(file, "\n# GitLink ignore database\n{}", entry);
     }
 }
