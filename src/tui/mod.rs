@@ -102,9 +102,6 @@ fn run_loop(
 
                         // ── everything else → router ───────────────────────
                         _ => {
-                            // Draw once now so the spinner is visible while the
-                            // command blocks (router::execute may block_on async work)
-                            terminal.draw(|f| ui::draw(f, app))?;
                             let output = router::execute(&cmd);
                             app.push_output(output);
                         }
