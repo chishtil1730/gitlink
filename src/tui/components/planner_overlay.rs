@@ -33,7 +33,7 @@ pub fn draw(f: &mut Frame, ov: &PlannerOverlay) {
         .title_alignment(Alignment::Left)
         .title_bottom(Span::styled(
             "  Tab: switch panel  ·  a: add  ·  e: edit  ·  d: delete  ·  Space: toggle  ·  u/r: undo/redo  ·  q: close  ",
-            Style::default().fg(Color::Rgb(70, 70, 90)),
+            Style::default().fg(Color::Rgb(255, 255, 255)),
         ));
 
     f.render_widget(outer, popup);

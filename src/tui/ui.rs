@@ -2,7 +2,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    widgets::{Block, Paragraph},
+    widgets::{Block, Paragraph, Clear},
 };
 
 use super::{
@@ -19,14 +19,16 @@ use super::{
 };
 
 const MAX_SUGGESTIONS_SHOWN: usize = 8;
-
-/// Padding rows above the logo. Increase to push logo down.
 const LOGO_TOP_PADDING: u16 = 2;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
 
-    // Fill background
+    // 1️⃣ FULL FRAME CLEAR (CRITICAL FIX)
+    // Wipes the terminal buffer every frame so closed overlays leave no "ghost" edges.
+    f.render_widget(Clear, area);
+
+    // 2️⃣ Background Fill
     f.render_widget(
         Block::default().style(Style::default().bg(Color::Rgb(10, 10, 14))),
         area,
@@ -40,30 +42,24 @@ pub fn draw(f: &mut Frame, app: &App) {
         0
     };
 
-    let logo_block_h = LOGO_TOP_PADDING + logo_h;
-    let fixed_bottom = dialog_h + suggestion_h;
-    let output_h = area.height.saturating_sub(logo_block_h + fixed_bottom);
-
+    // 3️⃣ Stabilized Layout Constraints
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(LOGO_TOP_PADDING),
             Constraint::Length(logo_h),
-            Constraint::Length(output_h),
+            Constraint::Min(0),      // Absorbs remaining space
             Constraint::Length(dialog_h),
             Constraint::Length(suggestion_h),
         ])
         .split(area);
 
-    // --- Logo ---
-    // If scroll >= 20.0, we simulate the aberration by passing a jittered elapsed time
-    // to the existing renderer without changing its signature in logo.rs.
+    // --- Logo (Aberration logic starts at 20.0 scroll) ---
     let time_param = if app.output_scroll >= 20.0 {
-        app.elapsed * 1.5 // Speed up/jitter animation to simulate aberration
+        app.elapsed * 1.5
     } else {
         app.elapsed
     };
-
     f.render_widget(logo::render(time_param), chunks[1]);
 
     // --- Output area ---
@@ -71,7 +67,6 @@ pub fn draw(f: &mut Frame, app: &App) {
     let total_lines = output_lines.len() as u16;
     let visible_h = chunks[2].height;
 
-    // Handle f32 scroll value for TUI rendering
     let max_scroll = total_lines.saturating_sub(visible_h);
     let current_scroll_u16 = app.output_scroll as u16;
     let clamped = current_scroll_u16.min(max_scroll);
@@ -98,17 +93,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         );
     }
 
-    // --- Overlays (drawn on top of everything) ---
+    // --- Overlays (Drawn LAST to stay on top) ---
     match &app.overlay {
-        Some(Overlay::Scanner(ov)) => {
-            scanner_overlay::draw(f, ov);
-        }
-        Some(Overlay::Planner(ov)) => {
-            planner_overlay::draw(f, ov);
-        }
-        Some(Overlay::Ignore(ov)) => {
-            ignore_overlay::draw(f, ov);
-        }
+        Some(Overlay::Scanner(ov)) => { scanner_overlay::draw(f, ov); }
+        Some(Overlay::Planner(ov)) => { planner_overlay::draw(f, ov); }
+        Some(Overlay::Ignore(ov)) => { ignore_overlay::draw(f, ov); }
         None => {}
     }
 }

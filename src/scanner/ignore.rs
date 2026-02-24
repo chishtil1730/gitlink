@@ -106,9 +106,9 @@ pub fn remove_by_short_id(short_id: &str) {
     db.ignored.retain(|item| item.short_id != short_id);
 
     if db.ignored.len() < original_len {
-        println!("Removed [{}].", short_id);
+        //println!("Removed [{}].", short_id);
     } else {
-        println!("Short ID [{}] not found.", short_id);
+        //println!("Short ID [{}] not found.", short_id);
     }
 
     save_ignore_db(&db);

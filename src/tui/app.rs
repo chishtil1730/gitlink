@@ -159,6 +159,7 @@ pub struct App {
     pub cmd_history: Vec<String>,
     pub history_index: Option<usize>,
     pub overlay: Option<Overlay>,
+    pub needs_full_redraw: bool,  // triggers terminal.clear() next frame after overlay closes
     pending_command: Option<String>,
 }
 
@@ -178,6 +179,7 @@ impl App {
             cmd_history: vec![],
             history_index: None,
             overlay: None,
+            needs_full_redraw: false,
             pending_command: None,
         };
         app.outputs.push(OutputBlock {
@@ -290,6 +292,7 @@ impl App {
                 if let Some(Overlay::Scanner(ref ov)) = self.overlay {
                     if ov.done {
                         self.overlay = None;
+                        self.needs_full_redraw = true;
                         self.push_output(OutputBlock {
                             kind: OutputKind::Success,
                             content: "Scan review complete.".to_string(),
@@ -301,6 +304,7 @@ impl App {
                 let close = handle_planner_key(ov, key);
                 if close {
                     self.overlay = None;
+                    self.needs_full_redraw = true;
                     self.push_output(OutputBlock {
                         kind: OutputKind::Success,
                         content: "Planner closed.".to_string(),
@@ -311,6 +315,7 @@ impl App {
                 handle_ignore_key(ov, key);
                 if ov.done {
                     self.overlay = None;
+                    self.needs_full_redraw = true;
                 }
             }
             None => {}
@@ -496,40 +501,42 @@ pub fn handle_scanner_key(ov: &mut ScannerOverlay, key: KeyEvent) {
 // ─── Ignore Manager key handler ──────────────────────────────────────────────
 
 pub fn handle_ignore_key(ov: &mut IgnoreOverlay, key: KeyEvent) {
+    let total_options = ov.items.len() + 2;
+
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => {
             if ov.selected > 0 {
                 ov.selected -= 1;
             } else {
-                ov.selected = ov.items.len(); // Wrap to "Clear ALL"
+                ov.selected = total_options.saturating_sub(1);
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if ov.selected < ov.items.len() {
-                ov.selected += 1;
-            } else {
-                ov.selected = 0;
-            }
+            ov.selected = (ov.selected + 1) % total_options;
         }
         KeyCode::Enter => {
-            if ov.is_clear_all_selected() {
-                crate::scanner::ignore::clear_all_silent();
-                ov.done = true;
-            } else if !ov.items.is_empty() {
-                let item = &ov.items[ov.selected];
-                crate::scanner::ignore::remove_by_short_id(&item.short_id);
-
-                // Refresh data
+            let len = ov.items.len();
+            if ov.selected < len {
+                let id_to_remove = ov.items[ov.selected].short_id.clone();
+                crate::scanner::ignore::remove_by_short_id(&id_to_remove);
                 ov.items = crate::scanner::ignore::load_ignore_db().ignored;
-
                 if ov.items.is_empty() {
-                    ov.done = true;
+                    ov.selected = 0;
                 } else if ov.selected >= ov.items.len() {
-                    ov.selected = ov.items.len() - 1;
+                    ov.selected = ov.items.len().saturating_sub(1);
                 }
+            } else if ov.selected == len {
+                crate::scanner::ignore::clear_all_silent();
+                ov.items.clear();
+                ov.done = true;
+            } else {
+                ov.done = true;
             }
         }
-        KeyCode::Esc | KeyCode::Char('q') => { ov.done = true; }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            ov.items.clear();
+            ov.done = true;
+        }
         _ => {}
     }
 }

@@ -43,6 +43,13 @@ fn run_loop(
     events: &EventHandler,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
+        // One-shot hard terminal clear to flush ghost border chars left by
+        // ratatui's double-buffer differ when an overlay closes.
+        if app.needs_full_redraw {
+            terminal.clear()?;
+            app.needs_full_redraw = false;
+        }
+
         terminal.draw(|f| ui::draw(f, app))?;
 
         match events.next()? {
@@ -66,23 +73,25 @@ fn run_loop(
                             app.open_planner_overlay();
                         }
 
-                        // ── /scan → run scan then open scanner overlay ─────
+                        // ── /scan → run scan or manage ignored ──────────────────────────
                         "scan" => {
-                            let findings = match sub {
+                            match sub {
+                                "ignored" | "--manage-ignored" => {
+                                    app.open_ignore_overlay();
+                                }
                                 "history" => {
                                     let mut f = crate::scanner::engine::scan_git_history(None);
                                     let db = crate::scanner::ignore::load_ignore_db();
                                     f.retain(|x| !db.ignored.iter().any(|i| i.fingerprint == x.fingerprint));
-                                    f
+                                    app.open_scanner_overlay(f);
                                 }
                                 _ => {
                                     let mut f = crate::scanner::engine::scan_directory(".");
                                     let db = crate::scanner::ignore::load_ignore_db();
                                     f.retain(|x| !db.ignored.iter().any(|i| i.fingerprint == x.fingerprint));
-                                    f
+                                    app.open_scanner_overlay(f);
                                 }
-                            };
-                            app.open_scanner_overlay(findings);
+                            }
                         }
 
                         // ── /clear ─────────────────────────────────────────

@@ -72,41 +72,41 @@ pub fn execute(raw: &str) -> OutputBlock {
         // ── Scan (ignored listing only — active scan handled in tui/mod.rs) ───
         // ── Scan ──────────────────────────────────────────────────────────────
         // ── Scan ──────────────────────────────────────────────────────────────
-        "scan" => match sub {
-            // 1. List ignored findings via the TUI
-            "ignored" => {
-                let content = crate::scanner::ignore::get_ignored_list_string();
-                OutputBlock {
+        "scan" => {
+            // Trim the subcommand to be safe from hidden characters
+            let sub_clean = sub.trim();
+
+            match sub_clean {
+                // Match the TUI-friendly command or the CLI-style flag
+                "ignored" | "--manage-ignored" => OutputBlock {
                     kind: OutputKind::Info,
-                    content,
-                }
-            },
+                    content: "OPEN_IGNORE_OVERLAY_SIGNAL".to_string(),
+                },
 
-            // 2. Clear the ignore database
-            "clear" => run_sync(|| {
-                crate::scanner::ignore::clear_all_silent(); // We'll add this silent version below
-                Ok("All ignored findings have been cleared.".to_string())
-            }),
+                "clear" => run_sync(|| {
+                    crate::scanner::ignore::clear_all_silent();
+                    Ok("All ignored findings have been cleared.".to_string())
+                }),
 
-            // 3. Base command: Intercepted by TUI to open interactive overlay
-            "" => OutputBlock {
-                kind: OutputKind::Info,
-                content: "Opening scanner overlay...".to_string(),
-            },
+                "history" => OutputBlock {
+                    kind: OutputKind::Info,
+                    content: "SCAN_HISTORY_SIGNAL".to_string(),
+                },
 
-            // 4. Trigger for history scanning
-            "history" => OutputBlock {
-                kind: OutputKind::Info,
-                content: "SCAN_HISTORY_SIGNAL".to_string(),
-            },
+                // If 'sub' is empty, it means they just typed "/scan"
+                "" => OutputBlock {
+                    kind: OutputKind::Info,
+                    content: "Opening scanner overlay...".to_string(),
+                },
 
-            _ => OutputBlock {
-                kind: OutputKind::Error,
-                content: format!(
-                    "Unknown scan subcommand: '{}'. Try /scan, /scan ignored, or /scan clear.",
-                    sub
-                ),
-            },
+                _ => OutputBlock {
+                    kind: OutputKind::Error,
+                    content: format!(
+                        "Unknown scan subcommand: '{}'. Try /scan ignored.",
+                        sub_clean
+                    ),
+                },
+            }
         },
 
         // ── Plan (intercepted in tui/mod.rs) ──────────────────────────────────
