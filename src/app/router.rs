@@ -163,7 +163,7 @@ pub fn execute(raw: &str) -> OutputBlock {
                  Pull requests       : {}\n\
                  Issues              : {}\n\
                  Repos created       : {}\n\
-                 \nLast 3 days:\n{}",
+                 \nLast 3 days:\n{}\n{}",
                 activity.viewer.name.as_deref().unwrap_or("N/A"),
                 activity.viewer.login,
                 contrib.contribution_calendar.total_contributions,
@@ -172,6 +172,14 @@ pub fn execute(raw: &str) -> OutputBlock {
                 contrib.total_issue_contributions,
                 contrib.total_repository_contributions,
                 recent.join("\n"),
+                {
+                    let weeks: Vec<String> = contrib.contribution_calendar.weeks.iter()
+                        .map(|w| w.contribution_days.iter()
+                            .map(|d| d.contribution_count.to_string())
+                            .collect::<Vec<_>>().join(","))
+                        .collect();
+                    format!("GRID:{}", weeks.join("|"))
+                },
             ))
         }),
 

@@ -2,6 +2,20 @@
 name = "gitlink"
 version = "0.1.0"
 edition = "2021"
+description = "Terminal GitHub companion — sync status, commits, PRs, secret scanner, task planner and more"
+authors = ["Barakh Chishti <catterpi1432@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/chishtil1730/gitlink"
+homepage = "https://github.com/chishtil1730/gitlink"
+readme = "README.md"
+keywords = ["github", "git", "tui", "cli", "terminal"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = [
+    ".github/*",
+    "assets/*",
+    "*.png",
+    "*.gif"
+]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

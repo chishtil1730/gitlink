@@ -755,16 +755,12 @@ pub fn handle_auth_key(ov: &mut AuthOverlay, key: KeyEvent) -> bool {
                 let sel = ov.selected;
                 match sel {
                     0 => {
-                        // Step 1: get device code — build a local runtime since TUI
-                        // runs outside of the #[tokio::main] async context.
-                        let rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build();
-                        let info_result = match rt {
-                            Err(e) => Err(Box::new(e) as Box<dyn std::error::Error>),
-                            Ok(rt) => rt.block_on(crate::auth::oauth::request_device_code())
-                                .map_err(|e| e as Box<dyn std::error::Error>),
-                        };
+                        // Step 1: get device code (fast, blocking ok)
+                        let info_result = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current().block_on(async {
+                                crate::auth::oauth::request_device_code().await
+                            })
+                        });
                         match info_result {
                             Err(e) => {
                                 ov.step = AuthStep::Result(format!("Error: {}", e));
@@ -773,29 +769,22 @@ pub fn handle_auth_key(ov: &mut AuthOverlay, key: KeyEvent) -> bool {
                                 let user_code = info.user_code.clone();
                                 let url = info.verification_uri.clone();
                                 let (tx, rx) = std::sync::mpsc::channel();
-                                // Spawn a plain OS thread with its own runtime for polling.
-                                std::thread::spawn(move || {
-                                    let rt = tokio::runtime::Builder::new_current_thread()
-                                        .enable_all()
-                                        .build()
-                                        .expect("tokio runtime");
-                                    rt.block_on(async {
-                                        // Wait 5 seconds then open browser
-                                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                        let _ = open::that(&info.verification_uri);
-                                        let result = crate::auth::oauth::poll_for_token(&info).await;
-                                        match result {
-                                            Ok(token) => {
-                                                let save = crate::auth::token_store::save_token(&token);
-                                                let msg = match save {
-                                                    Ok(_) => "__AUTH_SUCCESS__".to_string(),
-                                                    Err(e) => format!("Error saving token: {}", e),
-                                                };
-                                                let _ = tx.send(msg);
-                                            }
-                                            Err(e) => { let _ = tx.send(format!("Error: {}", e)); }
+                                tokio::task::spawn(async move {
+                                    // Count down 5 seconds before opening browser
+                                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                    let _ = open::that(&info.verification_uri);
+                                    let result = crate::auth::oauth::poll_for_token(&info).await;
+                                    match result {
+                                        Ok(token) => {
+                                            let save = crate::auth::token_store::save_token(&token);
+                                            let msg = match save {
+                                                Ok(_) => "__AUTH_SUCCESS__".to_string(),
+                                                Err(e) => format!("Error saving token: {}", e),
+                                            };
+                                            let _ = tx.send(msg);
                                         }
-                                    });
+                                        Err(e) => { let _ = tx.send(format!("Error: {}", e)); }
+                                    }
                                 });
                                 ov.poll_rx = Some(rx);
                                 ov.step = AuthStep::ShowCode { user_code, url };
@@ -1380,7 +1369,12 @@ pub fn handle_multi_sync_key(ov: &mut MultiSyncOverlay, key: KeyEvent) -> bool {
                     ov.search.pop();
                     ov.cursor = 0;
                 }
-                KeyCode::Char(c) if ov.search_active => {
+                KeyCode::Char('/') if ov.search_active => {
+                    ov.search_active = false;
+                    ov.search.clear();
+                    ov.cursor = 0;
+                }
+                KeyCode::Char(c) if ov.search_active && c != ' ' => {
                     ov.search.push(c);
                     ov.cursor = 0;
                 }

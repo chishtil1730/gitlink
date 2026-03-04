@@ -557,6 +557,111 @@ fn build_activity_lines(content: String) -> Vec<Line<'static>> {
             continue;
         }
 
+        // ── 365-day contribution grid ────────────────────────────────────
+        if t.starts_with("GRID:") {
+            let data = &t["GRID:".len()..];
+            // Parse weeks: each week is comma-separated daily counts
+            let weeks: Vec<Vec<i32>> = data.split('|')
+                .map(|w| w.split(',')
+                    .filter_map(|n| n.parse::<i32>().ok())
+                    .collect())
+                .collect();
+
+            if !weeks.is_empty() {
+                // Find max for relative scaling
+                let max_val = weeks.iter().flat_map(|w| w.iter()).copied().max().unwrap_or(1).max(1);
+
+                lines.push(empty());
+                lines.push(sep());
+                lines.push(Line::from(Span::styled(
+                    "  Contribution Activity — Last 365 days",
+                    Style::default().fg(C_HEADER).add_modifier(Modifier::BOLD),
+                )));
+                lines.push(empty());
+
+                // GitHub-style grid: 7 rows (Sun–Sat), 53 cols (weeks)
+                // Each cell is a block char coloured by heat level
+                let day_labels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                // Heat palette: 0 = empty, 1-4 = increasing green shades
+                let heat_colors = [
+                    Color::Rgb(22, 27, 34),     // 0  — no contributions (dark bg)
+                    Color::Rgb(14, 68, 41),     // 1  — very low
+                    Color::Rgb(0, 109, 50),     // 2  — low
+                    Color::Rgb(38, 166, 65),    // 3  — medium
+                    Color::Rgb(57, 211, 83),    // 4  — high
+                ];
+                let heat_char = "█";
+
+                for row in 0..7usize {
+                    let mut spans: Vec<Span<'static>> = vec![
+                        Span::styled(
+                            format!("  {:3} ", day_labels[row]),
+                            Style::default().fg(C_LABEL),
+                        ),
+                    ];
+                    for week in &weeks {
+                        let count = week.get(row).copied().unwrap_or(0);
+                        let level = if count == 0 { 0 }
+                        else if count <= max_val / 4 { 1 }
+                        else if count <= max_val / 2 { 2 }
+                        else if count <= (max_val * 3) / 4 { 3 }
+                        else { 4 };
+                        spans.push(Span::styled(
+                            heat_char,
+                            Style::default().fg(heat_colors[level]),
+                        ));
+                        spans.push(Span::raw(" "));
+                    }
+                    lines.push(Line::from(spans));
+                }
+
+                // Month labels row — find first day of each month
+                let mut month_spans: Vec<Span<'static>> = vec![
+                    Span::styled("       ", Style::default()),
+                ];
+                let month_names = ["Jan","Feb","Mar","Apr","May","Jun",
+                    "Jul","Aug","Sep","Oct","Nov","Dec"];
+                let mut last_month: i32 = -1;
+                for (wi, week) in weeks.iter().enumerate() {
+                    // We don't have dates here, estimate from position
+                    // Use a placeholder space — just mark every ~4 weeks
+                    let _ = week;
+                    let approx_month = ((wi as i32 * 12) / 53).min(11);
+                    if approx_month != last_month {
+                        last_month = approx_month;
+                        let label = month_names[approx_month as usize];
+                        month_spans.push(Span::styled(
+                            label.to_string(),
+                            Style::default().fg(C_LABEL),
+                        ));
+                        // pad to align: label is 3 chars, each cell is 2 chars wide
+                        // so skip next cell
+                    } else {
+                        month_spans.push(Span::raw("  "));
+                    }
+                }
+                lines.push(empty());
+                lines.push(Line::from(month_spans));
+
+                // Legend
+                lines.push(empty());
+                lines.push(Line::from(vec![
+                    Span::styled("  Less ", Style::default().fg(C_LABEL)),
+                    Span::styled("█", Style::default().fg(heat_colors[0])),
+                    Span::raw(" "),
+                    Span::styled("█", Style::default().fg(heat_colors[1])),
+                    Span::raw(" "),
+                    Span::styled("█", Style::default().fg(heat_colors[2])),
+                    Span::raw(" "),
+                    Span::styled("█", Style::default().fg(heat_colors[3])),
+                    Span::raw(" "),
+                    Span::styled("█", Style::default().fg(heat_colors[4])),
+                    Span::styled(" More", Style::default().fg(C_LABEL)),
+                ]));
+            }
+            continue;
+        }
+
         lines.push(Line::from(Span::styled(l, Style::default().fg(C_BODY))));
     }
     lines.push(empty());
