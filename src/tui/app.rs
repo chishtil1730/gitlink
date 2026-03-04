@@ -155,7 +155,10 @@ impl AuthOverlay {
 // ─── PRP Overlay ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum PrpStep { SelectRepos, EnterMessage, Result }
+pub enum PrpStep { SelectRepos, ReviewChanges, EnterMessage, ConfirmPush, Result }
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiffKind { Added, Removed, Modified, Header, Stat, Neutral }
 
 pub struct PrpOverlay {
     pub repos: Vec<String>,
@@ -165,6 +168,9 @@ pub struct PrpOverlay {
     pub input_buf: String,
     pub input_cursor: usize,
     pub result_lines: Vec<String>,
+    pub diff_lines: Vec<(String, DiffKind)>,
+    pub diff_scroll: usize,
+    pub push_to_remote: bool,
     pub done: bool,
 }
 
@@ -179,6 +185,9 @@ impl PrpOverlay {
             input_buf: String::new(),
             input_cursor: 0,
             result_lines: vec![],
+            diff_lines: vec![],
+            diff_scroll: 0,
+            push_to_remote: false,
             done: false,
         }
     }
@@ -846,24 +855,42 @@ pub fn handle_prp_key(ov: &mut PrpOverlay, key: KeyEvent) -> bool {
             }
             KeyCode::Enter => {
                 if ov.included.iter().any(|&b| b) {
-                    ov.step = PrpStep::EnterMessage;
-                    ov.input_buf.clear();
-                    ov.input_cursor = 0;
+                    let selected: Vec<String> = ov.repos.iter().enumerate()
+                        .filter(|(i, _)| ov.included[*i])
+                        .map(|(_, p)| p.clone())
+                        .collect();
+                    ov.diff_lines = gather_diff_lines(&selected);
+                    ov.diff_scroll = 0;
+                    ov.step = PrpStep::ReviewChanges;
                 }
             }
             _ => {}
         },
+
+        PrpStep::ReviewChanges => match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => { ov.step = PrpStep::SelectRepos; }
+            KeyCode::Up   | KeyCode::Char('k') => { if ov.diff_scroll > 0 { ov.diff_scroll -= 1; } }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if ov.diff_scroll + 1 < ov.diff_lines.len() { ov.diff_scroll += 1; }
+            }
+            KeyCode::PageUp   => { ov.diff_scroll = ov.diff_scroll.saturating_sub(15); }
+            KeyCode::PageDown => {
+                ov.diff_scroll = (ov.diff_scroll + 15).min(ov.diff_lines.len().saturating_sub(1));
+            }
+            KeyCode::Enter => {
+                ov.step = PrpStep::EnterMessage;
+                ov.input_buf.clear();
+                ov.input_cursor = 0;
+            }
+            _ => {}
+        },
+
         PrpStep::EnterMessage => match key.code {
-            KeyCode::Esc => { ov.step = PrpStep::SelectRepos; }
+            KeyCode::Esc => { ov.step = PrpStep::ReviewChanges; }
             KeyCode::Enter => {
                 let msg = ov.input_buf.trim().to_string();
                 if !msg.is_empty() {
-                    let selected_repos: Vec<String> = ov.repos.iter().enumerate()
-                        .filter(|(i, _)| ov.included[*i])
-                        .map(|(_, n)| n.clone())
-                        .collect();
-                    ov.result_lines = run_prp_commit(selected_repos, &msg);
-                    ov.step = PrpStep::Result;
+                    ov.step = PrpStep::ConfirmPush;
                 }
             }
             KeyCode::Backspace => {
@@ -877,53 +904,234 @@ pub fn handle_prp_key(ov: &mut PrpOverlay, key: KeyEvent) -> bool {
             KeyCode::Char(c) => { ov.input_buf.insert(ov.input_cursor, c); ov.input_cursor += 1; }
             _ => {}
         },
-        PrpStep::Result => {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => return true,
-                _ => {}
+
+        PrpStep::ConfirmPush => match key.code {
+            KeyCode::Esc => { ov.step = PrpStep::EnterMessage; }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let msg = ov.input_buf.trim().to_string();
+                let selected: Vec<String> = ov.repos.iter().enumerate()
+                    .filter(|(i, _)| ov.included[*i])
+                    .map(|(_, p)| p.clone())
+                    .collect();
+                ov.push_to_remote = true;
+                ov.result_lines = run_prp_commit(selected, &msg, true);
+                ov.diff_scroll = 0;
+                ov.step = PrpStep::Result;
             }
-        }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter => {
+                let msg = ov.input_buf.trim().to_string();
+                let selected: Vec<String> = ov.repos.iter().enumerate()
+                    .filter(|(i, _)| ov.included[*i])
+                    .map(|(_, p)| p.clone())
+                    .collect();
+                ov.push_to_remote = false;
+                ov.result_lines = run_prp_commit(selected, &msg, false);
+                ov.diff_scroll = 0;
+                ov.step = PrpStep::Result;
+            }
+            _ => {}
+        },
+
+        PrpStep::Result => match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => return true,
+            KeyCode::Up   | KeyCode::Char('k') => { if ov.diff_scroll > 0 { ov.diff_scroll -= 1; } }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if ov.diff_scroll + 1 < ov.result_lines.len() { ov.diff_scroll += 1; }
+            }
+            KeyCode::PageUp   => { ov.diff_scroll = ov.diff_scroll.saturating_sub(15); }
+            KeyCode::PageDown => {
+                ov.diff_scroll = (ov.diff_scroll + 15).min(ov.result_lines.len().saturating_sub(1));
+            }
+            _ => {}
+        },
     }
     false
 }
 
-fn run_prp_commit(repos: Vec<String>, message: &str) -> Vec<String> {
+// Gathers `git status --short` + `git diff --stat` for each repo into styled lines.
+fn gather_diff_lines(repo_paths: &[String]) -> Vec<(String, DiffKind)> {
+    let mut out: Vec<(String, DiffKind)> = Vec::new();
+
+    for path in repo_paths {
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+
+        out.push((String::new(), DiffKind::Neutral));
+        out.push((format!("  ▣  {}", name), DiffKind::Header));
+        out.push(("  ──────────────────────────────────────────────────────────".to_string(), DiffKind::Neutral));
+
+        // git status --short
+        let status_out = std::process::Command::new("git")
+            .args(["-C", path, "status", "--short"])
+            .output();
+
+        match status_out {
+            Err(_) => {
+                out.push(("    ✖  Could not run git in this directory".to_string(), DiffKind::Removed));
+                continue;
+            }
+            Ok(o) if !o.status.success() => {
+                let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                out.push((format!("    ✖  {}", err), DiffKind::Removed));
+                continue;
+            }
+            Ok(o) => {
+                let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+                if stdout.trim().is_empty() {
+                    out.push(("    • Nothing to commit (working tree clean)".to_string(), DiffKind::Neutral));
+                } else {
+                    out.push(("  Changes:".to_string(), DiffKind::Stat));
+                    for line in stdout.lines() {
+                        if line.trim().is_empty() { continue; }
+                        let xy: Vec<char> = line.chars().take(2).collect();
+                        let index_status = xy.first().copied().unwrap_or(' ');
+                        let work_status  = xy.get(1).copied().unwrap_or(' ');
+                        let filename = if line.len() > 3 { &line[3..] } else { line };
+
+                        // Classify by index + worktree status codes
+                        let (kind, symbol) = if line.starts_with("??") {
+                            (DiffKind::Added,    "? ")
+                        } else {
+                            match (index_status, work_status) {
+                                ('A', _)           => (DiffKind::Added,    "+ "),
+                                ('D', _) | (_, 'D')=> (DiffKind::Removed,  "– "),
+                                ('R', _)           => (DiffKind::Modified, "» "),
+                                ('C', _)           => (DiffKind::Added,    "+ "),
+                                _                  => (DiffKind::Modified, "● "),
+                            }
+                        };
+
+                        // Label for the status codes
+                        let label = match (index_status, work_status) {
+                            ('?', '?')           => "untracked",
+                            ('A', _)             => "added",
+                            ('D', _) | (_, 'D')  => "deleted",
+                            ('R', _)             => "renamed",
+                            ('M', _) | (_, 'M')  => "modified",
+                            ('C', _)             => "copied",
+                            _                    => "changed",
+                        };
+
+                        out.push((
+                            format!("    {}  {:10}  {}", symbol, label, filename),
+                            kind,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // git diff --stat (unstaged)
+        if let Ok(o) = std::process::Command::new("git")
+            .args(["-C", path, "diff", "--stat"])
+            .output()
+        {
+            let stat = String::from_utf8_lossy(&o.stdout).to_string();
+            if !stat.trim().is_empty() {
+                out.push((String::new(), DiffKind::Neutral));
+                out.push(("  Diff stat:".to_string(), DiffKind::Stat));
+                for line in stat.lines() {
+                    if line.trim().is_empty() { continue; }
+                    // Summary line "N files changed, N insertions(+), N deletions(-)"
+                    let kind = if line.contains("insertion") || line.contains("deletion") {
+                        DiffKind::Stat
+                    } else {
+                        DiffKind::Modified
+                    };
+                    out.push((format!("    {}", line), kind));
+                }
+            }
+        }
+
+        out.push((String::new(), DiffKind::Neutral));
+    }
+
+    if out.is_empty() {
+        out.push(("  No repositories selected.".to_string(), DiffKind::Neutral));
+    }
+    out
+}
+
+fn run_prp_commit(repos: Vec<String>, message: &str, push: bool) -> Vec<String> {
     let mut lines = vec![
         "🔗 PRP Commit Session".to_string(),
-        "────────────────────────────────────".to_string(),
-        format!("Commit message: {}", message),
+        "────────────────────────────────────────────────────────────".to_string(),
+        format!("  Message:         {}", message),
+        format!("  Push to remote:  {}", if push { "yes" } else { "no" }),
         String::new(),
     ];
 
     for repo in &repos {
-        let _ = std::process::Command::new("git")
-            .args(["-C", repo, "add", "-A"])
-            .output();
-        let commit_out = std::process::Command::new("git")
-            .args(["-C", repo, "commit", "-m", message])
-            .output();
+        let name = std::path::Path::new(repo)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| repo.clone());
 
-        match commit_out {
+        lines.push(format!("  ▣  {}", name));
+
+        // Stage all
+        if let Ok(o) = std::process::Command::new("git")
+            .args(["-C", repo, "add", "-A"])
+            .output()
+        {
+            if !o.status.success() {
+                let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                lines.push(format!("    ✖  git add failed: {}", err));
+                lines.push(String::new());
+                continue;
+            }
+        }
+
+        // Commit
+        match std::process::Command::new("git")
+            .args(["-C", repo, "commit", "-m", message])
+            .output()
+        {
             Ok(out) => {
                 let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
                 if out.status.success() {
-                    lines.push(format!("  ✔  {}", repo));
-                    if !stdout.is_empty() {
-                        lines.push(format!("     {}", stdout.lines().next().unwrap_or("")));
+                    lines.push("    ✔  Committed".to_string());
+                    if let Some(first) = stdout.lines().next() {
+                        lines.push(format!("       {}", first));
+                    }
+
+                    if push {
+                        match std::process::Command::new("git")
+                            .args(["-C", repo, "push"])
+                            .output()
+                        {
+                            Ok(po) => {
+                                if po.status.success() {
+                                    lines.push("    ✔  Pushed to remote".to_string());
+                                } else {
+                                    let perr = String::from_utf8_lossy(&po.stderr).trim().to_string();
+                                    lines.push(format!("    ⚠  Push failed: {}",
+                                                       perr.lines().next().unwrap_or("unknown")));
+                                }
+                            }
+                            Err(e) => { lines.push(format!("    ✖  Push error: {}", e)); }
+                        }
                     }
                 } else {
-                    lines.push(format!("  ✖  {} — {}", repo, stderr.lines().next().unwrap_or("no changes")));
+                    let reason = if stderr.contains("nothing to commit") {
+                        "Nothing to commit (working tree clean)".to_string()
+                    } else {
+                        stderr.lines().next().unwrap_or("commit failed").to_string()
+                    };
+                    lines.push(format!("    –  {}", reason));
                 }
             }
-            Err(_) => {
-                lines.push(format!("  ✖  {} — failed to run git", repo));
-            }
+            Err(e) => { lines.push(format!("    ✖  Failed to run git: {}", e)); }
         }
+
+        lines.push(String::new());
     }
 
-    lines.push(String::new());
-    lines.push("Press Enter or Esc to close.".to_string());
+    lines.push("────────────────────────────────────────────────────────────".to_string());
+    lines.push("  Press Enter or Esc to close.".to_string());
     lines
 }
 

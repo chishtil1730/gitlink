@@ -80,27 +80,38 @@ pub fn draw(f: &mut Frame, ov: &crate::tui::app::InfoOverlay) {
 // ── PRP overlay (two-panel: repo list + commit input) ───────────────────────
 
 pub fn draw_prp(f: &mut Frame, ov: &crate::tui::app::PrpOverlay) {
-    let area = f.area();
-    let popup = centered_rect(90, 82, area);
+    use crate::tui::app::PrpStep;
 
+    let area = f.area();
+    let popup = centered_rect(92, 86, area);
     f.render_widget(Clear, popup);
 
-    let border_color = Color::Rgb(130, 90, 200);
+    let accent = Color::Rgb(130, 90, 200);
+
+    let hint = match ov.step {
+        PrpStep::SelectRepos  => "  ↑↓  navigate    Space  toggle    Enter  review changes    Esc  close  ",
+        PrpStep::ReviewChanges=> "  ↑↓ / PgUp PgDn  scroll    Enter  write message    Esc  back  ",
+        PrpStep::EnterMessage => "  Type commit message    Enter  confirm    Esc  back  ",
+        PrpStep::ConfirmPush  => "  y  push to remote    n / Enter  commit only    Esc  back  ",
+        PrpStep::Result       => "  ↑↓ / PgUp PgDn  scroll    Enter / Esc  close  ",
+    };
+
+    let title = match ov.step {
+        PrpStep::SelectRepos   => "  🔗 PRP Hub — Select Repositories  ",
+        PrpStep::ReviewChanges => "  🔗 PRP Hub — Review Changes  ",
+        PrpStep::EnterMessage  => "  🔗 PRP Hub — Commit Message  ",
+        PrpStep::ConfirmPush   => "  🔗 PRP Hub — Push to Remote?  ",
+        PrpStep::Result        => "  🔗 PRP Hub — Result  ",
+    };
 
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Rgb(60, 70, 90)))
-        .style(Style::default().bg(Color::Rgb(13, 15, 20)))
-        .title(Span::styled(
-            "  🔗 PRP Hub — Poly-Repo Commit Session  ",
-            Style::default().fg(border_color).add_modifier(Modifier::BOLD),
-        ))
+        .style(Style::default().bg(Color::Rgb(10, 12, 18)))
+        .title(Span::styled(title, Style::default().fg(accent).add_modifier(Modifier::BOLD)))
         .title_alignment(Alignment::Left)
-        .title_bottom(Span::styled(
-            "  ↑↓  select repo    Space  toggle    Enter  commit    Esc  close  ",
-            Style::default().fg(Color::Rgb(80, 90, 110)),
-        ));
+        .title_bottom(Span::styled(hint, Style::default().fg(Color::Rgb(70, 80, 100))));
 
     f.render_widget(outer, popup);
 
@@ -111,26 +122,42 @@ pub fn draw_prp(f: &mut Frame, ov: &crate::tui::app::PrpOverlay) {
         height: popup.height.saturating_sub(2),
     };
 
-    // Split: left repo list, right details/input
-    let panels = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(inner);
-
-    draw_prp_repo_list(f, ov, panels[0]);
-    draw_prp_detail(f, ov, panels[1]);
+    match ov.step {
+        PrpStep::SelectRepos => {
+            let panels = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                .split(inner);
+            draw_prp_repo_list(f, ov, panels[0], accent);
+            draw_prp_select_detail(f, ov, panels[1], accent);
+        }
+        PrpStep::ReviewChanges => {
+            draw_prp_diff(f, ov, inner, accent);
+        }
+        PrpStep::EnterMessage => {
+            let panels = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                .split(inner);
+            draw_prp_repo_list(f, ov, panels[0], accent);
+            draw_prp_message_input(f, ov, panels[1], accent);
+        }
+        PrpStep::ConfirmPush => {
+            draw_prp_confirm_push(f, ov, inner, accent);
+        }
+        PrpStep::Result => {
+            draw_prp_result(f, ov, inner, accent);
+        }
+    }
 }
 
-fn draw_prp_repo_list(f: &mut Frame, ov: &crate::tui::app::PrpOverlay, area: Rect) {
+fn draw_prp_repo_list(f: &mut Frame, ov: &crate::tui::app::PrpOverlay, area: Rect, accent: Color) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Rgb(50, 55, 70)))
-        .style(Style::default().bg(Color::Rgb(13, 15, 20)))
-        .title(Span::styled(
-            "  Repositories  ",
-            Style::default().fg(Color::Rgb(130, 90, 200)).add_modifier(Modifier::BOLD),
-        ));
+        .border_style(Style::default().fg(Color::Rgb(45, 50, 68)))
+        .style(Style::default().bg(Color::Rgb(10, 12, 18)))
+        .title(Span::styled("  Repositories  ", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
 
     f.render_widget(block, area);
 
@@ -147,174 +174,407 @@ fn draw_prp_repo_list(f: &mut Frame, ov: &crate::tui::app::PrpOverlay, area: Rec
                 Line::from(""),
                 Line::from(Span::styled(
                     "No git repositories found.",
-                    Style::default().fg(Color::Rgb(100, 100, 120)),
+                    Style::default().fg(Color::Rgb(90, 95, 115)),
                 )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Run from a directory with git repos.",
-                    Style::default().fg(Color::Rgb(80, 85, 100)),
-                )),
-            ])
-                .alignment(Alignment::Center),
+            ]).alignment(Alignment::Center),
             list_area,
         );
         return;
     }
 
-    let lines: Vec<Line> = ov
-        .repos
-        .iter()
-        .enumerate()
-        .map(|(i, repo)| {
-            let is_sel = i == ov.selected;
-            let is_included = ov.included[i];
+    let lines: Vec<Line> = ov.repos.iter().enumerate().map(|(i, repo)| {
+        let is_cursor   = i == ov.selected;
+        let is_included = ov.included[i];
 
-            let pointer = if is_sel {
-                Span::styled("▶ ", Style::default().fg(Color::Rgb(130, 90, 200)))
-            } else {
-                Span::raw("  ")
-            };
+        // Show just the final path component as the display name
+        let display = std::path::Path::new(repo)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| repo.clone());
 
-            let checkbox = if is_included {
-                Span::styled("☑ ", Style::default().fg(Color::Rgb(46, 160, 90)))
-            } else {
-                Span::styled("☐ ", Style::default().fg(Color::Rgb(80, 85, 100)))
-            };
+        let pointer = if is_cursor {
+            Span::styled("▶ ", Style::default().fg(accent))
+        } else {
+            Span::raw("  ")
+        };
 
-            let name_style = if is_sel {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-            } else if is_included {
-                Style::default().fg(Color::Rgb(200, 205, 215))
-            } else {
-                Style::default().fg(Color::Rgb(80, 85, 100))
-            };
+        let checkbox = if is_included {
+            Span::styled("☑ ", Style::default().fg(Color::Rgb(80, 210, 130)).add_modifier(Modifier::BOLD))
+        } else {
+            Span::styled("☐ ", Style::default().fg(Color::Rgb(55, 60, 78)))
+        };
 
-            let bg = if is_sel {
-                Style::default().bg(Color::Rgb(30, 25, 45))
-            } else {
-                Style::default()
-            };
+        let name_style = if is_cursor {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else if is_included {
+            Style::default().fg(Color::Rgb(200, 208, 230))
+        } else {
+            Style::default().fg(Color::Rgb(75, 80, 100))
+        };
 
-            Line::from(vec![pointer, checkbox, Span::styled(repo.clone(), name_style)]).style(bg)
-        })
-        .collect();
+        let bg = if is_cursor { Style::default().bg(Color::Rgb(22, 20, 38)) } else { Style::default() };
+
+        Line::from(vec![pointer, checkbox, Span::styled(display, name_style)]).style(bg)
+    }).collect();
 
     f.render_widget(Paragraph::new(lines), list_area);
 }
 
-fn draw_prp_detail(f: &mut Frame, ov: &crate::tui::app::PrpOverlay, area: Rect) {
+fn draw_prp_select_detail(f: &mut Frame, ov: &crate::tui::app::PrpOverlay, area: Rect, accent: Color) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Rgb(50, 55, 70)))
-        .style(Style::default().bg(Color::Rgb(16, 17, 22)))
-        .title(Span::styled(
-            "  Commit  ",
-            Style::default().fg(Color::Rgb(130, 90, 200)).add_modifier(Modifier::BOLD),
-        ));
+        .border_style(Style::default().fg(Color::Rgb(45, 50, 68)))
+        .style(Style::default().bg(Color::Rgb(12, 14, 20)))
+        .title(Span::styled("  Session  ", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
 
     f.render_widget(block, area);
 
-    let detail_area = Rect {
-        x: area.x + 2,
+    let inner = Rect {
+        x: area.x + 3,
         y: area.y + 2,
-        width: area.width.saturating_sub(4),
+        width: area.width.saturating_sub(6),
         height: area.height.saturating_sub(3),
     };
 
-    use crate::tui::app::PrpStep;
-    match ov.step {
-        PrpStep::SelectRepos => {
-            let included_count = ov.included.iter().filter(|&&b| b).count();
-            let lines = vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Select repositories to include",
-                    Style::default().fg(Color::Rgb(180, 185, 210)).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("Selected: ", Style::default().fg(Color::Rgb(100, 110, 130))),
-                    Span::styled(
-                        format!("{}/{}", included_count, ov.repos.len()),
-                        Style::default().fg(Color::Rgb(130, 90, 200)).add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                Line::from(""),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Keybindings:",
-                    Style::default().fg(Color::Rgb(80, 85, 100)),
-                )),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("  Space  ", Style::default().fg(Color::Rgb(130, 90, 200))),
-                    Span::styled("toggle repo", Style::default().fg(Color::Rgb(160, 165, 185))),
-                ]),
-                Line::from(vec![
-                    Span::styled("  Enter  ", Style::default().fg(Color::Rgb(130, 90, 200))),
-                    Span::styled("proceed to commit message", Style::default().fg(Color::Rgb(160, 165, 185))),
-                ]),
-                Line::from(vec![
-                    Span::styled("  Esc    ", Style::default().fg(Color::Rgb(130, 90, 200))),
-                    Span::styled("cancel session", Style::default().fg(Color::Rgb(160, 165, 185))),
-                ]),
-            ];
-            f.render_widget(Paragraph::new(lines), detail_area);
-        }
+    let included = ov.included.iter().filter(|&&b| b).count();
+    let total    = ov.repos.len();
 
-        PrpStep::EnterMessage => {
-            let cursor = ov.input_cursor;
-            let buf = &ov.input_buf;
-            let before = &buf[..cursor];
-            let cursor_ch = buf.chars().nth(cursor).map(|c| c.to_string()).unwrap_or_else(|| " ".to_string());
-            let after_start = (cursor + cursor_ch.len()).min(buf.len());
-            let after = &buf[after_start..];
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Select repositories for this commit session.",
+            Style::default().fg(Color::Rgb(150, 158, 185)),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Selected  ", Style::default().fg(Color::Rgb(90, 100, 130))),
+            Span::styled(
+                format!("{} / {}", included, total),
+                if included > 0 {
+                    Style::default().fg(Color::Rgb(80, 210, 130)).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Rgb(90, 100, 130))
+                },
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ──────────────────────────────────",
+            Style::default().fg(Color::Rgb(38, 42, 58)),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Space  ", Style::default().fg(accent)),
+            Span::styled("toggle repo", Style::default().fg(Color::Rgb(140, 148, 172))),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter  ", Style::default().fg(accent)),
+            Span::styled("review changes", Style::default().fg(Color::Rgb(140, 148, 172))),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc    ", Style::default().fg(accent)),
+            Span::styled("cancel session", Style::default().fg(Color::Rgb(140, 148, 172))),
+        ]),
+    ];
 
-            let lines = vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Enter commit message:",
-                    Style::default().fg(Color::Rgb(180, 185, 210)).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled(before.to_string(), Style::default().fg(Color::White)),
-                    Span::styled(cursor_ch, Style::default().fg(Color::Black).bg(Color::Rgb(200, 180, 255))),
-                    Span::styled(after.to_string(), Style::default().fg(Color::White)),
-                ]),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "  ─────────────────────────────────────────",
-                    Style::default().fg(Color::Rgb(40, 45, 60)),
-                )),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("  Enter  ", Style::default().fg(Color::Rgb(130, 90, 200))),
-                    Span::styled("confirm & commit", Style::default().fg(Color::Rgb(160, 165, 185))),
-                ]),
-                Line::from(vec![
-                    Span::styled("  Esc    ", Style::default().fg(Color::Rgb(130, 90, 200))),
-                    Span::styled("back to repo selection", Style::default().fg(Color::Rgb(160, 165, 185))),
-                ]),
-            ];
-            f.render_widget(Paragraph::new(lines), detail_area);
-        }
+    if included > 0 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  ──────────────────────────────────",
+            Style::default().fg(Color::Rgb(38, 42, 58)),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("  {} repo{} ready", included, if included == 1 { "" } else { "s" }),
+            Style::default().fg(Color::Rgb(80, 210, 130)).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  Press Enter to see changes →",
+            Style::default().fg(Color::Rgb(80, 210, 130)),
+        )));
+    }
 
-        PrpStep::Result => {
-            let lines: Vec<Line> = ov
-                .result_lines
-                .iter()
-                .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(Color::Rgb(200, 205, 220)))))
-                .collect();
-            f.render_widget(
-                Paragraph::new(lines).wrap(Wrap { trim: false }),
-                detail_area,
-            );
-        }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_prp_diff(f: &mut Frame, ov: &crate::tui::app::PrpOverlay, area: Rect, accent: Color) {
+    use crate::tui::app::DiffKind;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(45, 50, 68)))
+        .style(Style::default().bg(Color::Rgb(10, 12, 18)))
+        .title(Span::styled("  Changes  ", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+
+    f.render_widget(block, area);
+
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    let visible = inner.height as usize;
+    let total   = ov.diff_lines.len();
+    let max_scroll = total.saturating_sub(visible);
+    let scroll = ov.diff_scroll.min(max_scroll);
+
+    let lines: Vec<Line> = ov.diff_lines.iter()
+        .skip(scroll)
+        .take(visible)
+        .map(|(text, kind)| {
+            let style = match kind {
+                DiffKind::Header   => Style::default().fg(Color::Rgb(160, 120, 240)).add_modifier(Modifier::BOLD),
+                DiffKind::Added    => Style::default().fg(Color::Rgb(80, 210, 130)),
+                DiffKind::Removed  => Style::default().fg(Color::Rgb(220, 80, 80)),
+                DiffKind::Modified => Style::default().fg(Color::Rgb(230, 180, 60)),
+                DiffKind::Stat     => Style::default().fg(Color::Rgb(100, 155, 245)),
+                DiffKind::Neutral  => Style::default().fg(Color::Rgb(70, 78, 100)),
+            };
+            Line::from(Span::styled(text.clone(), style))
+        })
+        .collect();
+
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+
+    // Scroll position indicator
+    if total > visible {
+        let pct = if total <= 1 { 100u16 } else { ((scroll * 100) / (total - 1)) as u16 };
+        let hint = Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("  ↑↓ scroll  {}/{} ", scroll + 1, total),
+                Style::default().fg(Color::Rgb(60, 68, 88)),
+            ),
+            Span::styled(
+                format!("{}%  Enter to commit →  ", pct),
+                Style::default().fg(Color::Rgb(100, 108, 138)),
+            ),
+        ])).alignment(Alignment::Right);
+
+        let hint_area = Rect {
+            x: area.x,
+            y: area.y + area.height.saturating_sub(1),
+            width: area.width.saturating_sub(2),
+            height: 1,
+        };
+        f.render_widget(hint, hint_area);
     }
 }
+
+fn draw_prp_message_input(f: &mut Frame, ov: &crate::tui::app::PrpOverlay, area: Rect, accent: Color) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent))
+        .style(Style::default().bg(Color::Rgb(12, 14, 20)))
+        .title(Span::styled("  Commit Message  ", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+
+    f.render_widget(block, area);
+
+    let inner = Rect {
+        x: area.x + 3,
+        y: area.y + 2,
+        width: area.width.saturating_sub(6),
+        height: area.height.saturating_sub(3),
+    };
+
+    let cursor = ov.input_cursor;
+    let buf    = &ov.input_buf;
+    let before = &buf[..cursor];
+    let cursor_ch = buf.chars().nth(cursor)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| " ".to_string());
+    let after_start = (cursor + cursor_ch.len()).min(buf.len());
+    let after  = &buf[after_start..];
+
+    let char_count = buf.chars().count();
+    let count_color = if char_count > 72 { Color::Rgb(220, 80, 80) }
+    else if char_count > 50 { Color::Rgb(230, 180, 60) }
+    else { Color::Rgb(70, 78, 100) };
+
+    let lines = vec![
+        Line::from(Span::styled(
+            "Describe what you changed:",
+            Style::default().fg(Color::Rgb(140, 148, 175)),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  ❯ "),
+            Span::styled(before.to_string(), Style::default().fg(Color::White)),
+            Span::styled(
+                cursor_ch,
+                Style::default().fg(Color::Rgb(10, 12, 18)).bg(Color::Rgb(180, 140, 255)),
+            ),
+            Span::styled(after.to_string(), Style::default().fg(Color::White)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ─────────────────────────────────────────",
+            Style::default().fg(Color::Rgb(38, 42, 58)),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(format!("  {} chars", char_count), Style::default().fg(count_color)),
+            Span::styled("    (72 recommended max)", Style::default().fg(Color::Rgb(55, 60, 78))),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Enter  ", Style::default().fg(accent)),
+            Span::styled("next step", Style::default().fg(Color::Rgb(140, 148, 172))),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc    ", Style::default().fg(accent)),
+            Span::styled("back to diff", Style::default().fg(Color::Rgb(140, 148, 172))),
+        ]),
+    ];
+
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_prp_confirm_push(f: &mut Frame, ov: &crate::tui::app::PrpOverlay, area: Rect, accent: Color) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent))
+        .style(Style::default().bg(Color::Rgb(10, 12, 18)));
+
+    f.render_widget(block, area);
+
+    let inner = Rect {
+        x: area.x + 4,
+        y: area.y + 2,
+        width: area.width.saturating_sub(8),
+        height: area.height.saturating_sub(4),
+    };
+
+    let included: Vec<&String> = ov.repos.iter().enumerate()
+        .filter(|(i, _)| ov.included[*i])
+        .map(|(_, r)| r)
+        .collect();
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Ready to commit",
+            Style::default().fg(Color::Rgb(180, 190, 255)).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Message:  ", Style::default().fg(Color::Rgb(90, 100, 130))),
+            Span::styled(
+                ov.input_buf.trim().to_string(),
+                Style::default().fg(Color::Rgb(220, 225, 255)).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Repos:    ", Style::default().fg(Color::Rgb(90, 100, 130))),
+            Span::styled(
+                format!("{} selected", included.len()),
+                Style::default().fg(Color::Rgb(80, 210, 130)),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ─────────────────────────────────────────────────────",
+            Style::default().fg(Color::Rgb(38, 42, 58)),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Push to remote after committing?",
+            Style::default().fg(Color::Rgb(200, 208, 230)).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [ y ]  ", Style::default()
+                .fg(Color::Rgb(80, 210, 130))
+                .add_modifier(Modifier::BOLD)),
+            Span::styled("Yes — commit + push", Style::default().fg(Color::Rgb(80, 210, 130))),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [ n ]  ", Style::default()
+                .fg(Color::Rgb(160, 120, 240))
+                .add_modifier(Modifier::BOLD)),
+            Span::styled("No  — commit only", Style::default().fg(Color::Rgb(140, 148, 175))),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [ Esc ]  ", Style::default().fg(Color::Rgb(90, 100, 130))),
+            Span::styled("Back to message", Style::default().fg(Color::Rgb(80, 88, 112))),
+        ]),
+    ];
+
+    // Show which repos will be committed
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ─────────────────────────────────────────────────────",
+        Style::default().fg(Color::Rgb(38, 42, 58)),
+    )));
+    lines.push(Line::from(""));
+    for repo in &included {
+        let name = std::path::Path::new(repo)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| repo.to_string());
+        lines.push(Line::from(vec![
+            Span::styled("  ▣  ", Style::default().fg(Color::Rgb(100, 155, 245))),
+            Span::styled(name, Style::default().fg(Color::Rgb(180, 188, 215))),
+        ]));
+    }
+
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_prp_result(f: &mut Frame, ov: &crate::tui::app::PrpOverlay, area: Rect, accent: Color) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(45, 50, 68)))
+        .style(Style::default().bg(Color::Rgb(10, 12, 18)))
+        .title(Span::styled("  Result  ", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+
+    f.render_widget(block, area);
+
+    let inner = Rect {
+        x: area.x + 2,
+        y: area.y + 1,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(2),
+    };
+
+    let visible   = inner.height as usize;
+    let total     = ov.result_lines.len();
+    let max_scroll = total.saturating_sub(visible);
+    let scroll    = ov.diff_scroll.min(max_scroll);
+
+    let lines: Vec<Line> = ov.result_lines.iter()
+        .skip(scroll)
+        .take(visible)
+        .map(|text| {
+            let style = if text.contains("✔") {
+                Style::default().fg(Color::Rgb(80, 210, 130))
+            } else if text.contains("✖") || text.contains("failed") || text.contains("error") {
+                Style::default().fg(Color::Rgb(220, 80, 80))
+            } else if text.contains("⚠") {
+                Style::default().fg(Color::Rgb(230, 180, 60))
+            } else if text.contains("▣") {
+                Style::default().fg(Color::Rgb(160, 120, 240)).add_modifier(Modifier::BOLD)
+            } else if text.contains("Message:") || text.contains("Push") {
+                Style::default().fg(Color::Rgb(100, 155, 245))
+            } else if text.starts_with("─") || text.starts_with("  ─") {
+                Style::default().fg(Color::Rgb(40, 45, 60))
+            } else {
+                Style::default().fg(Color::Rgb(170, 178, 210))
+            };
+            Line::from(Span::styled(text.clone(), style))
+        })
+        .collect();
+
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
 
 // ── Auth overlay ─────────────────────────────────────────────────────────────
 
