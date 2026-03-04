@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
-const CLIENT_ID: &str = env!("GITLINK_CLIENT_ID");
+const CLIENT_ID: &str = "Ov23liVaeQzp77a16FuM";
 
 #[derive(Deserialize, Debug)]
 struct DeviceCodeResponse {
