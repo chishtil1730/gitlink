@@ -592,3 +592,369 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         ])
         .split(v[1])[1]
 }
+// ── MultiSync overlay ────────────────────────────────────────────────────────
+
+pub fn draw_multi_sync(f: &mut Frame, ov: &crate::tui::app::MultiSyncOverlay) {
+    use crate::tui::app::MultiSyncStep;
+
+    let area = f.area();
+    let popup = centered_rect(94, 88, area);
+    f.render_widget(Clear, popup);
+
+    let accent = Color::Rgb(100, 180, 200);
+
+    let hint = match ov.step {
+        MultiSyncStep::Loading  => "  Loading repositories…    Esc  cancel  ",
+        MultiSyncStep::Running  => "  Checking sync status…    Esc  cancel  ",
+        MultiSyncStep::SelectRepos => "  ↑↓  navigate    Space  toggle    a  all/none    /  search    Enter  run sync    Esc  close  ",
+        MultiSyncStep::Results  => "  ↑↓ / PgUp PgDn  scroll    q / Esc  close  ",
+    };
+
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(60, 70, 90)))
+        .style(Style::default().bg(Color::Rgb(10, 12, 18)))
+        .title(Span::styled(
+            "  📦 Multi-Repo Sync  ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ))
+        .title_alignment(Alignment::Left)
+        .title_bottom(Span::styled(
+            hint,
+            Style::default().fg(Color::Rgb(70, 80, 100)),
+        ));
+
+    f.render_widget(outer, popup);
+
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+
+    match ov.step {
+        MultiSyncStep::Loading | MultiSyncStep::Running => {
+            draw_multi_sync_loading(f, ov, inner, accent);
+        }
+        MultiSyncStep::SelectRepos => {
+            draw_multi_sync_select(f, ov, inner, accent);
+        }
+        MultiSyncStep::Results => {
+            draw_multi_sync_results(f, ov, inner);
+        }
+    }
+}
+
+fn draw_multi_sync_loading(f: &mut Frame, ov: &crate::tui::app::MultiSyncOverlay, area: Rect, accent: Color) {
+    use crate::tui::app::MultiSyncStep;
+    let msg = match ov.step {
+        MultiSyncStep::Loading => "  Fetching your GitHub repositories…",
+        _ =>                      "  Checking sync status for selected repositories…",
+    };
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(msg, Style::default().fg(Color::Rgb(160, 170, 200)))),
+    ];
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_multi_sync_select(f: &mut Frame, ov: &crate::tui::app::MultiSyncOverlay, area: Rect, accent: Color) {
+    // Split: left = repo list, right = legend/stats
+    let panels = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+        .split(area);
+
+    draw_multi_sync_list(f, ov, panels[0], accent);
+    draw_multi_sync_sidebar(f, ov, panels[1], accent);
+}
+
+fn draw_multi_sync_list(f: &mut Frame, ov: &crate::tui::app::MultiSyncOverlay, area: Rect, accent: Color) {
+    let border_color = Color::Rgb(45, 52, 68);
+
+    // Search bar height
+    let search_h = if ov.search_active || !ov.search.is_empty() { 3u16 } else { 0u16 };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(search_h),
+            Constraint::Min(0),
+        ])
+        .split(area);
+
+    // Search bar
+    if search_h > 0 {
+        let query_display = format!("  / {}▌", ov.search);
+        let search_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(accent))
+            .style(Style::default().bg(Color::Rgb(10, 14, 22)));
+        f.render_widget(search_block, chunks[0]);
+        let inner_search = Rect {
+            x: chunks[0].x + 2,
+            y: chunks[0].y + 1,
+            width: chunks[0].width.saturating_sub(4),
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(query_display, Style::default().fg(accent))),
+            inner_search,
+        );
+    }
+
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .style(Style::default().bg(Color::Rgb(10, 12, 18)))
+        .title(Span::styled("  Repositories  ", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+    f.render_widget(&list_block, chunks[1]);
+
+    let list_inner = Rect {
+        x: chunks[1].x + 2,
+        y: chunks[1].y + 1,
+        width: chunks[1].width.saturating_sub(4),
+        height: chunks[1].height.saturating_sub(2),
+    };
+
+    let filtered = ov.filtered_indices();
+
+    if filtered.is_empty() {
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  No repositories match your search.",
+                    Style::default().fg(Color::Rgb(80, 85, 110)),
+                )),
+            ]),
+            list_inner,
+        );
+        return;
+    }
+
+    // Scroll to keep cursor visible
+    let visible_h = list_inner.height as usize;
+    let scroll_start = if ov.cursor >= visible_h {
+        ov.cursor - visible_h + 1
+    } else {
+        0
+    };
+
+    let lines: Vec<Line> = filtered.iter().enumerate()
+        .skip(scroll_start)
+        .take(visible_h)
+        .map(|(vis_idx, &real_idx)| {
+            let repo = &ov.repos[real_idx];
+            let cursor_idx = vis_idx; // position in filtered list
+            let is_cursor = ov.cursor == (scroll_start + cursor_idx).min(filtered.len().saturating_sub(1));
+            // re-derive correctly:
+            let actual_filtered_pos = scroll_start + cursor_idx;
+            let is_cursor = ov.cursor == actual_filtered_pos;
+
+            let checkbox = if repo.selected {
+                Span::styled("☑ ", Style::default().fg(Color::Rgb(80, 210, 130)).add_modifier(Modifier::BOLD))
+            } else {
+                Span::styled("☐ ", Style::default().fg(Color::Rgb(60, 65, 88)))
+            };
+
+            let privacy_icon = if repo.is_private {
+                Span::styled("🔒 ", Style::default())
+            } else {
+                Span::styled("🌍 ", Style::default())
+            };
+
+            let name_style = if is_cursor {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else if repo.selected {
+                Style::default().fg(Color::Rgb(210, 218, 245))
+            } else {
+                Style::default().fg(Color::Rgb(130, 138, 165))
+            };
+
+            let bg = if is_cursor {
+                Style::default().bg(Color::Rgb(25, 30, 50))
+            } else {
+                Style::default()
+            };
+
+            let pointer = if is_cursor {
+                Span::styled("▶ ", Style::default().fg(accent))
+            } else {
+                Span::raw("  ")
+            };
+
+            // Truncate description
+            let desc = if repo.description.is_empty() {
+                String::new()
+            } else {
+                let max_desc = (list_inner.width as usize).saturating_sub(50);
+                if repo.description.len() > max_desc && max_desc > 3 {
+                    format!("  {}", &repo.description[..max_desc])
+                } else {
+                    format!("  {}", repo.description)
+                }
+            };
+
+            Line::from(vec![
+                pointer,
+                checkbox,
+                privacy_icon,
+                Span::styled(repo.name_with_owner.clone(), name_style),
+                Span::styled(desc, Style::default().fg(Color::Rgb(70, 78, 100))),
+            ]).style(bg)
+        })
+        .collect();
+
+    f.render_widget(Paragraph::new(lines), list_inner);
+
+    // Scroll indicator
+    if filtered.len() > visible_h {
+        let pct = if filtered.len() <= 1 { 100u16 }
+        else { (ov.cursor * 100 / (filtered.len() - 1)) as u16 };
+        let ind = Paragraph::new(Line::from(Span::styled(
+            format!(" {}% ", pct),
+            Style::default().fg(Color::Rgb(70, 78, 100)),
+        ))).alignment(Alignment::Right);
+        let ind_area = Rect {
+            x: chunks[1].x,
+            y: chunks[1].y + chunks[1].height.saturating_sub(1),
+            width: chunks[1].width.saturating_sub(2),
+            height: 1,
+        };
+        f.render_widget(ind, ind_area);
+    }
+}
+
+fn draw_multi_sync_sidebar(f: &mut Frame, ov: &crate::tui::app::MultiSyncOverlay, area: Rect, accent: Color) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(45, 52, 68)))
+        .style(Style::default().bg(Color::Rgb(10, 12, 18)))
+        .title(Span::styled("  Selection  ", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+    f.render_widget(&block, area);
+
+    let inner = Rect {
+        x: area.x + 2,
+        y: area.y + 2,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(3),
+    };
+
+    let total     = ov.repos.len();
+    let selected  = ov.repos.iter().filter(|r| r.selected).count();
+    let filtered  = ov.filtered_indices().len();
+    let private   = ov.repos.iter().filter(|r| r.is_private).count();
+    let public    = total - private;
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Total      ", Style::default().fg(Color::Rgb(90, 100, 130))),
+            Span::styled(format!("{}", total), Style::default().fg(Color::Rgb(180, 190, 220)).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Selected   ", Style::default().fg(Color::Rgb(90, 100, 130))),
+            Span::styled(
+                format!("{}/{}", selected, total),
+                if selected > 0 {
+                    Style::default().fg(Color::Rgb(80, 210, 130)).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Rgb(90, 100, 130))
+                },
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Visible    ", Style::default().fg(Color::Rgb(90, 100, 130))),
+            Span::styled(format!("{}", filtered), Style::default().fg(Color::Rgb(180, 190, 220))),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("🌍 Public  ", Style::default().fg(Color::Rgb(90, 100, 130))),
+            Span::styled(format!("{}", public), Style::default().fg(Color::Rgb(100, 155, 245))),
+        ]),
+        Line::from(vec![
+            Span::styled("🔒 Private ", Style::default().fg(Color::Rgb(90, 100, 130))),
+            Span::styled(format!("{}", private), Style::default().fg(Color::Rgb(160, 120, 240))),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("─────────────────", Style::default().fg(Color::Rgb(40, 45, 60)))),
+        Line::from(""),
+        Line::from(Span::styled("Keys:", Style::default().fg(Color::Rgb(90, 100, 130)).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Space  ", Style::default().fg(accent)),
+            Span::styled("toggle", Style::default().fg(Color::Rgb(140, 148, 175))),
+        ]),
+        Line::from(vec![
+            Span::styled("  a      ", Style::default().fg(accent)),
+            Span::styled("all / none", Style::default().fg(Color::Rgb(140, 148, 175))),
+        ]),
+        Line::from(vec![
+            Span::styled("  /      ", Style::default().fg(accent)),
+            Span::styled("search", Style::default().fg(Color::Rgb(140, 148, 175))),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter  ", Style::default().fg(accent)),
+            Span::styled("run sync", Style::default().fg(Color::Rgb(140, 148, 175))),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc    ", Style::default().fg(accent)),
+            Span::styled("close", Style::default().fg(Color::Rgb(140, 148, 175))),
+        ]),
+    ];
+
+    if selected > 0 {
+        let mut all_lines = lines;
+        all_lines.push(Line::from(""));
+        all_lines.push(Line::from(Span::styled("─────────────────", Style::default().fg(Color::Rgb(40, 45, 60)))));
+        all_lines.push(Line::from(""));
+        all_lines.push(Line::from(Span::styled(
+            format!("  {} ready to sync", selected),
+            Style::default().fg(Color::Rgb(80, 210, 130)).add_modifier(Modifier::BOLD),
+        )));
+        all_lines.push(Line::from(Span::styled(
+            "  Press Enter",
+            Style::default().fg(Color::Rgb(80, 210, 130)),
+        )));
+        f.render_widget(Paragraph::new(all_lines), inner);
+    } else {
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+fn draw_multi_sync_results(f: &mut Frame, ov: &crate::tui::app::MultiSyncOverlay, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(45, 52, 68)))
+        .style(Style::default().bg(Color::Rgb(10, 12, 18)))
+        .title(Span::styled("  Sync Results  ", Style::default().fg(Color::Rgb(100, 180, 200)).add_modifier(Modifier::BOLD)));
+    f.render_widget(&block, area);
+
+    let inner = Rect {
+        x: area.x + 2,
+        y: area.y + 1,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(2),
+    };
+
+    let visible = inner.height as usize;
+    let max_scroll = ov.result_lines.len().saturating_sub(visible);
+    let scroll = ov.scroll.min(max_scroll);
+
+    let lines: Vec<Line> = ov.result_lines.iter()
+        .skip(scroll)
+        .take(visible)
+        .map(|(text, color)| Line::from(Span::styled(text.clone(), Style::default().fg(*color))))
+        .collect();
+
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}

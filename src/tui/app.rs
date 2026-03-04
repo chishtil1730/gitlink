@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant, SystemTime};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::style::Color;
 
 use super::commands::{Command, COMMANDS};
 use crate::scanner::report::Finding;
@@ -183,6 +184,63 @@ impl PrpOverlay {
     }
 }
 
+
+// ─── MultiSync Overlay ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MultiSyncStep {
+    Loading,          // fetching repos from GitHub
+    SelectRepos,      // user picks repos with Space
+    Running,          // fetching sync results
+    Results,          // showing results
+}
+
+pub struct MultiSyncRepo {
+    pub name_with_owner: String,
+    pub description: String,
+    pub is_private: bool,
+    pub selected: bool,
+}
+
+pub struct MultiSyncOverlay {
+    pub step: MultiSyncStep,
+    pub repos: Vec<MultiSyncRepo>,
+    pub cursor: usize,
+    pub search: String,
+    pub search_active: bool,
+    pub result_lines: Vec<(String, Color)>,  // (text, color)
+    pub scroll: usize,
+    pub done: bool,
+}
+
+impl MultiSyncOverlay {
+    pub fn new_loading() -> Self {
+        Self {
+            step: MultiSyncStep::Loading,
+            repos: Vec::new(),
+            cursor: 0,
+            search: String::new(),
+            search_active: false,
+            result_lines: Vec::new(),
+            scroll: 0,
+            done: false,
+        }
+    }
+
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        let q = self.search.to_lowercase();
+        self.repos.iter().enumerate()
+            .filter(|(_, r)| q.is_empty() || r.name_with_owner.to_lowercase().contains(&q)
+                || r.description.to_lowercase().contains(&q))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub fn selected_repos(&self) -> Vec<&MultiSyncRepo> {
+        self.repos.iter().filter(|r| r.selected).collect()
+    }
+}
+
 // ─── Overlay enum ─────────────────────────────────────────────────────────────
 
 pub enum Overlay {
@@ -192,6 +250,7 @@ pub enum Overlay {
     Info(InfoOverlay),
     Auth(AuthOverlay),
     Prp(PrpOverlay),
+    MultiSync(MultiSyncOverlay),
 }
 
 // ─── Output ───────────────────────────────────────────────────────────────────
@@ -394,10 +453,19 @@ impl App {
                     self.push_output(OutputBlock { kind: OutputKind::Success, content: msg });
                 }
             }
+            Some(Overlay::MultiSync(ref mut ov)) => {
+                let close = handle_multi_sync_key(ov, key);
+                if close {
+                    self.overlay = None;
+                    self.needs_full_redraw = true;
+                    self.push_output(OutputBlock { kind: OutputKind::Info, content: "Multi-sync closed.".to_string() });
+                }
+            }
             None => {}
         }
         false
     }
+
 
     fn accept_suggestion(&mut self) {
         let cmd = self.filtered_commands[self.selected_index].name.clone();
@@ -558,6 +626,12 @@ impl App {
             self.overlay = Some(Overlay::Prp(PrpOverlay::new(repos)));
         }
     }
+
+    pub fn open_multi_sync_overlay(&mut self) {
+        self.is_executing = false;
+        self.overlay = Some(Overlay::MultiSync(MultiSyncOverlay::new_loading()));
+    }
+
 }
 
 // ─── Scanner key handler ──────────────────────────────────────────────────────
@@ -1057,4 +1131,96 @@ fn levenshtein(a: &str, b: &str) -> usize {
         }
     }
     dp[m][n]
+}
+// ─── MultiSync key handler ────────────────────────────────────────────────────
+
+pub fn handle_multi_sync_key(ov: &mut MultiSyncOverlay, key: KeyEvent) -> bool {
+    match ov.step {
+        MultiSyncStep::Loading | MultiSyncStep::Running => {
+            // Esc cancels while loading
+            if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
+                return true;
+            }
+        }
+        MultiSyncStep::SelectRepos => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => return true,
+
+                // Toggle search mode with '/'
+                KeyCode::Char('/') if !ov.search_active => {
+                    ov.search_active = true;
+                }
+                KeyCode::Esc if ov.search_active => {
+                    ov.search_active = false;
+                    ov.search.clear();
+                    ov.cursor = 0;
+                }
+
+                // Search input when active
+                KeyCode::Backspace if ov.search_active => {
+                    ov.search.pop();
+                    ov.cursor = 0;
+                }
+                KeyCode::Char(c) if ov.search_active => {
+                    ov.search.push(c);
+                    ov.cursor = 0;
+                }
+
+                // Navigation through filtered list
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let filtered = ov.filtered_indices();
+                    if ov.cursor > 0 { ov.cursor -= 1; }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let filtered = ov.filtered_indices();
+                    if ov.cursor + 1 < filtered.len() { ov.cursor += 1; }
+                }
+
+                // Space to toggle selection
+                KeyCode::Char(' ') => {
+                    let filtered = ov.filtered_indices();
+                    if let Some(&real_idx) = filtered.get(ov.cursor) {
+                        if let Some(r) = ov.repos.get_mut(real_idx) {
+                            r.selected = !r.selected;
+                        }
+                    }
+                }
+
+                // 'a' to select/deselect all visible
+                KeyCode::Char('a') => {
+                    let filtered = ov.filtered_indices();
+                    let all_selected = filtered.iter().all(|&i| ov.repos[i].selected);
+                    for &i in &filtered {
+                        ov.repos[i].selected = !all_selected;
+                    }
+                }
+
+                // Enter to run sync on selected repos
+                KeyCode::Enter => {
+                    if ov.repos.iter().any(|r| r.selected) {
+                        ov.step = MultiSyncStep::Running;
+                    }
+                }
+
+                _ => {}
+            }
+        }
+        MultiSyncStep::Results => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => return true,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if ov.scroll > 0 { ov.scroll -= 1; }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if ov.scroll + 1 < ov.result_lines.len() { ov.scroll += 1; }
+                }
+                KeyCode::PageUp => { ov.scroll = ov.scroll.saturating_sub(10); }
+                KeyCode::PageDown => {
+                    ov.scroll = (ov.scroll + 10).min(ov.result_lines.len().saturating_sub(1));
+                }
+                _ => {}
+            }
+        }
+    }
+    false
 }

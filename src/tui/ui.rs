@@ -101,6 +101,7 @@ pub fn draw(f: &mut Frame, app: &App, spin_elapsed: f32) {
         Some(Overlay::Info(ov))    => { info_overlay::draw(f, ov); }
         Some(Overlay::Auth(ov))    => { info_overlay::draw_auth(f, ov); }
         Some(Overlay::Prp(ov))     => { info_overlay::draw_prp(f, ov); }
+        Some(Overlay::MultiSync(ov)) => { info_overlay::draw_multi_sync(f, ov); }
         None => {}
     }
 }
