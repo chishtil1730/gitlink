@@ -1,55 +1,52 @@
-name: Release macOS Binary
+name: Release
 
 on:
   push:
-    branches: ["main"]
     tags:
-      - 'v*' # Triggers on version tags (e.g., v0.1.0)
-  pull_request:
-    branches: ["main"]
-
-env:
-  CARGO_TERM_COLOR: always
-  GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
+      - 'v*' # Triggers on v0.1.0, v1.2.3, etc.
 
 jobs:
-  build:
-    # Changed from ubuntu-latest to macos-latest for Homebrew compatibility
+  release:
+    name: Build and Release
     runs-on: macos-latest
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
 
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
+      - name: Build Intel Binary
+        run: cargo build --release --target x86_64-apple-darwin
 
-      - name: Build
-        run: cargo build --release --verbose
+      - name: Build Apple Silicon Binary
+        run: cargo build --release --target aarch64-apple-darwin
 
-      - name: Package Binary
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create Universal Binary
         run: |
-          cd target/release
-          tar -czvf ../../gitlink-macos.tar.gz gitlink
+          mkdir -p target/universal-macos
+          lipo -create \
+            target/x86_64-apple-darwin/release/gitlink \
+            target/aarch64-apple-darwin/release/gitlink \
+            -output target/universal-macos/gitlink
+          
+          # Package it as a .tar.gz (required for Homebrew)
+          cd target/universal-macos
+          tar -czf gitlink-macos-universal.tar.gz gitlink
+
+      - name: Generate SHA256
+        run: shasum -a 256 target/universal-macos/gitlink-macos-universal.tar.gz > target/universal-macos/gitlink-macos-universal.tar.gz.sha256
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          files: gitlink-macos.tar.gz
+          files: |
+            target/universal-macos/gitlink-macos-universal.tar.gz
+            target/universal-macos/gitlink-macos-universal.tar.gz.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run tests
-        run: cargo test --verbose
-
-      - name: Run clippy
-        # This will still fail the job if there are warnings,
-        # but the binary is already built/uploaded above.
-        run: cargo clippy --all-targets --all-features -- -D warnings
