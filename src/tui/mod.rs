@@ -277,12 +277,117 @@ fn overlay_meta(cmd: &str) -> (String, Color) {
 }
 
 fn text_to_lines(text: String) -> Vec<Line<'static>> {
-    text.lines()
-        .map(|l| Line::from(Span::styled(
-            l.to_string(),
-            Style::default().fg(Color::Rgb(200, 205, 220)),
-        )))
-        .collect()
+    text.lines().map(|raw| {
+        let l = raw.to_string();
+        let trimmed = l.trim();
+
+        // Divider lines
+        if !trimmed.is_empty() && trimmed.chars().all(|c| c == '─' || c == '═' || c == '-') {
+            return Line::from(Span::styled(l, Style::default().fg(Color::Rgb(45, 50, 68))));
+        }
+
+        // Empty line
+        if trimmed.is_empty() {
+            return Line::from("");
+        }
+
+        // Status icon lines (✅ ⚠️ ❌)
+        let is_status = trimmed.starts_with("✅") || trimmed.starts_with("⚠")
+            || trimmed.starts_with("❌") || trimmed.starts_with("💡");
+
+        // Starts with a non-ASCII char = emoji-led data line
+        let first_char = trimmed.chars().next().unwrap_or(' ');
+        let starts_with_emoji = !first_char.is_ascii();
+
+        // Indented key-value: "   Key:  Value"
+        let is_kv = (l.starts_with("  ") || l.starts_with("   "))
+            && trimmed.contains(':')
+            && !starts_with_emoji;
+
+        // Bullet
+        let is_bullet = trimmed.starts_with('•') || trimmed.starts_with("   •")
+            || trimmed.starts_with("     •");
+
+        // Top-level header: no leading indent, not a divider, not emoji
+        let is_header = !l.starts_with(' ')
+            && !starts_with_emoji
+            && !is_status;
+
+        if is_header {
+            return Line::from(Span::styled(
+                l,
+                Style::default()
+                    .fg(Color::Rgb(180, 190, 255))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        if is_kv {
+            if let Some(colon_pos) = trimmed.find(':') {
+                let indent: String = l.chars().take_while(|c| *c == ' ').collect();
+                let key = &trimmed[..colon_pos + 1];
+                let value = trimmed[colon_pos + 1..].trim();
+                return Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled(
+                        format!("{} ", key),
+                        Style::default().fg(Color::Rgb(110, 120, 160)),
+                    ),
+                    Span::styled(
+                        value.to_string(),
+                        Style::default().fg(Color::Rgb(215, 220, 240)),
+                    ),
+                ]);
+            }
+        }
+
+        if is_bullet || is_status {
+            return Line::from(Span::styled(l, Style::default().fg(Color::Rgb(170, 178, 210))));
+        }
+
+        if starts_with_emoji {
+            // Collect leading non-ASCII chars as icon
+            let mut icon_end = 0;
+            for c in trimmed.chars() {
+                if c.is_ascii() { break; }
+                icon_end += c.len_utf8();
+            }
+            let icon = &trimmed[..icon_end];
+            let rest = trimmed[icon_end..].trim_start();
+            let indent: String = l.chars().take_while(|c| *c == ' ').collect();
+
+            if let Some(cp) = rest.find(':') {
+                let key = &rest[..cp + 1];
+                let value = rest[cp + 1..].trim();
+                return Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled(
+                        format!("{} ", icon),
+                        Style::default().fg(Color::Rgb(240, 240, 255)),
+                    ),
+                    Span::styled(
+                        format!("{} ", key),
+                        Style::default().fg(Color::Rgb(110, 120, 160)),
+                    ),
+                    Span::styled(
+                        value.to_string(),
+                        Style::default().fg(Color::Rgb(215, 220, 240)),
+                    ),
+                ]);
+            }
+            return Line::from(vec![
+                Span::raw(indent),
+                Span::styled(
+                    format!("{} ", icon),
+                    Style::default().fg(Color::Rgb(240, 240, 255)),
+                ),
+                Span::styled(rest.to_string(), Style::default().fg(Color::Rgb(205, 212, 235))),
+            ]);
+        }
+
+        // Default body text
+        Line::from(Span::styled(l, Style::default().fg(Color::Rgb(185, 192, 215))))
+    }).collect()
 }
 
 fn discover_repo_names() -> Vec<String> {

@@ -800,9 +800,14 @@ fn run_async<F>(fut: F) -> OutputBlock
 where
     F: std::future::Future<Output = Result<String, String>>,
 {
-    let result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(fut)
-    });
+    // router::execute is called from spawn_blocking, which runs on a thread
+    // with NO existing tokio context. block_in_place / Handle::current() would
+    // panic. We build a fresh single-threaded runtime instead.
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())
+        .and_then(|rt| rt.block_on(fut).map_err(|e| e));
     match result {
         Ok(msg)  => OutputBlock { kind: OutputKind::Success, content: msg },
         Err(msg) => OutputBlock { kind: OutputKind::Error,   content: msg },
