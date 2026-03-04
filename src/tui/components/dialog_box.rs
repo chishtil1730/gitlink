@@ -74,12 +74,12 @@ pub fn render_spinner_bar(spin_elapsed: f32) -> Paragraph<'static> {
         Span::styled(
             "Executing",
             Style::default()
-                .fg(Color::Rgb(0, 200, 100))
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             "...",
-            Style::default().fg(Color::Rgb(0, 160, 80)),
+            Style::default().fg(Color::Rgb(200, 200, 200)),
         ),
     ]))
         .block(

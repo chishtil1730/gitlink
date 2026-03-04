@@ -56,7 +56,6 @@ impl IgnoreOverlay {
         }
     }
 
-    /// Returns true if the "Clear ALL" option (index == length) is selected
     pub fn is_clear_all_selected(&self) -> bool {
         self.selected == self.items.len()
     }
@@ -75,25 +74,13 @@ pub struct PlannerOverlay {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum PlannerFocus {
-    List,
-    Detail,
-}
+pub enum PlannerFocus { List, Detail }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum PlannerMode {
-    Normal,
-    AddingTask,
-    EditingTask,
-    ConfirmDelete,
-}
+pub enum PlannerMode { Normal, AddingTask, EditingTask, ConfirmDelete }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum InputField {
-    Title,
-    Tags,
-    Description,
-}
+pub enum InputField { Title, Tags, Description }
 
 impl PlannerOverlay {
     pub fn new() -> Self {
@@ -121,21 +108,96 @@ impl PlannerOverlay {
     }
 }
 
+// ─── Generic Info Overlay ─────────────────────────────────────────────────────
+
+pub struct InfoOverlay {
+    pub title: String,
+    pub lines: Vec<ratatui::text::Line<'static>>,
+    pub scroll: usize,
+    pub done: bool,
+    pub accent: ratatui::style::Color,
+}
+
+impl InfoOverlay {
+    pub fn new(
+        title: impl Into<String>,
+        lines: Vec<ratatui::text::Line<'static>>,
+        accent: ratatui::style::Color,
+    ) -> Self {
+        Self { title: title.into(), lines, scroll: 0, done: false, accent }
+    }
+}
+
+// ─── Auth Overlay ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AuthStep {
+    Menu,
+    ShowCode { user_code: String, url: String },
+    Polling { user_code: String, url: String, frame: usize },
+    Result(String),
+}
+
+pub struct AuthOverlay {
+    pub step: AuthStep,
+    pub selected: usize,
+    pub done: bool,
+    pub poll_rx: Option<std::sync::mpsc::Receiver<String>>,
+}
+
+impl AuthOverlay {
+    pub fn new() -> Self {
+        Self { step: AuthStep::Menu, selected: 0, done: false, poll_rx: None }
+    }
+}
+
+// ─── PRP Overlay ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PrpStep { SelectRepos, EnterMessage, Result }
+
+pub struct PrpOverlay {
+    pub repos: Vec<String>,
+    pub included: Vec<bool>,
+    pub selected: usize,
+    pub step: PrpStep,
+    pub input_buf: String,
+    pub input_cursor: usize,
+    pub result_lines: Vec<String>,
+    pub done: bool,
+}
+
+impl PrpOverlay {
+    pub fn new(repos: Vec<String>) -> Self {
+        let len = repos.len();
+        Self {
+            repos,
+            included: vec![true; len],
+            selected: 0,
+            step: PrpStep::SelectRepos,
+            input_buf: String::new(),
+            input_cursor: 0,
+            result_lines: vec![],
+            done: false,
+        }
+    }
+}
+
+// ─── Overlay enum ─────────────────────────────────────────────────────────────
+
 pub enum Overlay {
     Scanner(ScannerOverlay),
     Planner(PlannerOverlay),
     Ignore(IgnoreOverlay),
+    Info(InfoOverlay),
+    Auth(AuthOverlay),
+    Prp(PrpOverlay),
 }
 
 // ─── Output ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum OutputKind {
-    Success,
-    Error,
-    Info,
-    Command,
-}
+pub enum OutputKind { Success, Error, Info, Command }
 
 #[derive(Debug, Clone)]
 pub struct OutputBlock {
@@ -192,25 +254,25 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-        self.elapsed = self
-            .start_time
-            .elapsed()
-            .unwrap_or(Duration::ZERO)
-            .as_secs_f32();
+        self.elapsed = self.start_time.elapsed().unwrap_or(Duration::ZERO).as_secs_f32();
+        // Tick auth overlay so spinner advances and poll result is checked
+        if let Some(Overlay::Auth(ref mut ov)) = self.overlay {
+            auth_overlay_tick(ov);
+            if ov.done {
+                self.overlay = None;
+                self.needs_full_redraw = true;
+            }
+        }
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> bool {
-        if key.kind != KeyEventKind::Press {
-            return false;
-        }
+        if key.kind != KeyEventKind::Press { return false; }
 
         if self.overlay.is_some() {
             return self.handle_overlay_key(key);
         }
 
-        if self.is_executing {
-            return false;
-        }
+        if self.is_executing { return false; }
 
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
@@ -232,20 +294,13 @@ impl App {
                 }
             }
 
-            KeyCode::Left => {
-                if self.cursor_pos > 0 { self.cursor_pos -= 1; }
-            }
-            KeyCode::Right => {
-                if self.cursor_pos < self.input.len() { self.cursor_pos += 1; }
-            }
+            KeyCode::Left  => { if self.cursor_pos > 0 { self.cursor_pos -= 1; } }
+            KeyCode::Right => { if self.cursor_pos < self.input.len() { self.cursor_pos += 1; } }
 
             KeyCode::Up => {
                 if self.show_suggestions && !self.filtered_commands.is_empty() {
-                    if self.selected_index > 0 {
-                        self.selected_index -= 1;
-                    } else {
-                        self.selected_index = self.filtered_commands.len() - 1;
-                    }
+                    if self.selected_index > 0 { self.selected_index -= 1; }
+                    else { self.selected_index = self.filtered_commands.len() - 1; }
                 } else if self.input.is_empty() {
                     self.output_scroll += 1.0;
                 } else {
@@ -257,15 +312,13 @@ impl App {
                 if self.show_suggestions && !self.filtered_commands.is_empty() {
                     self.selected_index = (self.selected_index + 1) % self.filtered_commands.len();
                 } else if self.input.is_empty() {
-                    if self.output_scroll > 0.0 {
-                        self.output_scroll -= 1.0;
-                    }
+                    if self.output_scroll > 0.0 { self.output_scroll -= 1.0; }
                 } else {
                     self.navigate_history(1);
                 }
             }
 
-            KeyCode::PageUp => { self.output_scroll += 5.0; }
+            KeyCode::PageUp   => { self.output_scroll += 5.0; }
             KeyCode::PageDown => { self.output_scroll = (self.output_scroll - 5.0).max(0.0); }
 
             KeyCode::Tab => {
@@ -295,10 +348,7 @@ impl App {
                     if ov.done {
                         self.overlay = None;
                         self.needs_full_redraw = true;
-                        self.push_output(OutputBlock {
-                            kind: OutputKind::Success,
-                            content: "Scan review complete.".to_string(),
-                        });
+                        self.push_output(OutputBlock { kind: OutputKind::Success, content: "Scan review complete.".to_string() });
                     }
                 }
             }
@@ -307,10 +357,7 @@ impl App {
                 if close {
                     self.overlay = None;
                     self.needs_full_redraw = true;
-                    self.push_output(OutputBlock {
-                        kind: OutputKind::Success,
-                        content: "Planner closed.".to_string(),
-                    });
+                    self.push_output(OutputBlock { kind: OutputKind::Success, content: "Planner closed.".to_string() });
                 }
             }
             Some(Overlay::Ignore(ref mut ov)) => {
@@ -318,6 +365,33 @@ impl App {
                 if ov.done {
                     self.overlay = None;
                     self.needs_full_redraw = true;
+                }
+            }
+            Some(Overlay::Info(ref mut ov)) => {
+                handle_info_key(ov, key);
+                if ov.done {
+                    self.overlay = None;
+                    self.needs_full_redraw = true;
+                }
+            }
+            Some(Overlay::Auth(ref mut ov)) => {
+                let close = handle_auth_key(ov, key);
+                if close {
+                    self.overlay = None;
+                    self.needs_full_redraw = true;
+                }
+            }
+            Some(Overlay::Prp(ref mut ov)) => {
+                let close = handle_prp_key(ov, key);
+                if close {
+                    let msg = if !ov.result_lines.is_empty() {
+                        "PRP session complete.".to_string()
+                    } else {
+                        "PRP session cancelled.".to_string()
+                    };
+                    self.overlay = None;
+                    self.needs_full_redraw = true;
+                    self.push_output(OutputBlock { kind: OutputKind::Success, content: msg });
                 }
             }
             None => {}
@@ -347,9 +421,7 @@ impl App {
                 .cloned()
                 .collect();
             self.show_suggestions = !self.filtered_commands.is_empty();
-            if self.selected_index >= self.filtered_commands.len() {
-                self.selected_index = 0;
-            }
+            if self.selected_index >= self.filtered_commands.len() { self.selected_index = 0; }
         } else {
             self.show_suggestions = false;
             self.filtered_commands.clear();
@@ -361,11 +433,7 @@ impl App {
         let raw = self.input.trim().to_string();
         if raw.is_empty() { return; }
 
-        self.outputs.push(OutputBlock {
-            kind: OutputKind::Command,
-            content: raw.clone(),
-        });
-
+        self.outputs.push(OutputBlock { kind: OutputKind::Command, content: raw.clone() });
         self.cmd_history.push(raw.clone());
         self.history_index = None;
         self.input.clear();
@@ -383,8 +451,13 @@ impl App {
             return;
         }
 
-        let cmd_name = raw[1..].split_whitespace().next().unwrap_or("").to_string();
-        let known = COMMANDS.iter().any(|c| c.name == cmd_name);
+        let after_slash = &raw[1..];
+        let cmd_name = after_slash.split_whitespace().next().unwrap_or("").to_string();
+        // Match commands by first word (handles "push-check", "show-activity" etc.)
+        let known = COMMANDS.iter().any(|c| {
+            let c_root = c.name.split_whitespace().next().unwrap_or("");
+            c_root == cmd_name
+        });
         if !known {
             let suggestion = COMMANDS
                 .iter()
@@ -417,8 +490,6 @@ impl App {
         }
     }
 
-    /// Seconds since this execution started. Always begins at 0.0 for each
-    /// new command so the spinner always animates from frame 0.
     pub fn spin_elapsed(&self) -> f32 {
         self.spin_start.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0)
     }
@@ -455,12 +526,36 @@ impl App {
         self.is_executing = false;
         let ov = IgnoreOverlay::new();
         if ov.items.is_empty() {
-            self.push_output(OutputBlock {
-                kind: OutputKind::Info,
-                content: "No ignored findings to manage.".to_string(),
-            });
+            self.push_output(OutputBlock { kind: OutputKind::Info, content: "No ignored findings to manage.".to_string() });
         } else {
             self.overlay = Some(Overlay::Ignore(ov));
+        }
+    }
+
+    pub fn open_info_overlay(
+        &mut self,
+        title: impl Into<String>,
+        lines: Vec<ratatui::text::Line<'static>>,
+        accent: ratatui::style::Color,
+    ) {
+        self.is_executing = false;
+        self.overlay = Some(Overlay::Info(InfoOverlay::new(title, lines, accent)));
+    }
+
+    pub fn open_auth_overlay(&mut self) {
+        self.is_executing = false;
+        self.overlay = Some(Overlay::Auth(AuthOverlay::new()));
+    }
+
+    pub fn open_prp_overlay(&mut self, repos: Vec<String>) {
+        self.is_executing = false;
+        if repos.is_empty() {
+            self.push_output(OutputBlock {
+                kind: OutputKind::Error,
+                content: "No git repositories found in the current directory.".to_string(),
+            });
+        } else {
+            self.overlay = Some(Overlay::Prp(PrpOverlay::new(repos)));
         }
     }
 }
@@ -469,57 +564,43 @@ impl App {
 
 pub fn handle_scanner_key(ov: &mut ScannerOverlay, key: KeyEvent) {
     match key.code {
-        KeyCode::Left | KeyCode::Char('h') => { ov.choice = ScanChoice::Ignore; }
+        KeyCode::Left  | KeyCode::Char('h') => { ov.choice = ScanChoice::Ignore; }
         KeyCode::Right | KeyCode::Char('l') => { ov.choice = ScanChoice::Keep; }
-        KeyCode::Up | KeyCode::Char('k') => { ov.choice = ScanChoice::Keep; }
-        KeyCode::Down | KeyCode::Char('j') => { ov.choice = ScanChoice::Ignore; }
+        KeyCode::Up    | KeyCode::Char('k') => { ov.choice = ScanChoice::Keep; }
+        KeyCode::Down  | KeyCode::Char('j') => { ov.choice = ScanChoice::Ignore; }
         KeyCode::Enter => {
             if ov.choice == ScanChoice::Ignore {
                 if let Some(f) = ov.findings.get(ov.current_index) {
                     let short_id = f.fingerprint[..8.min(f.fingerprint.len())].to_string();
                     let variable = f.content
-                        .split('=')
-                        .next()
-                        .unwrap_or("")
-                        .trim()
+                        .split('=').next().unwrap_or("").trim()
                         .split(|c: char| !c.is_alphanumeric() && c != '_')
-                        .filter(|s| !s.is_empty())
-                        .last()
-                        .unwrap_or("unknown")
-                        .to_string();
+                        .filter(|s| !s.is_empty()).last().unwrap_or("unknown").to_string();
                     let source = if f.commit.is_some() { "history" } else { "working" }.to_string();
                     crate::scanner::ignore::add_ignored(crate::scanner::ignore::IgnoredItem {
                         fingerprint: f.fingerprint.clone(),
-                        short_id,
-                        variable,
-                        source,
+                        short_id, variable, source,
                         commit: f.commit.clone(),
                     });
                 }
             }
             ov.current_index += 1;
             ov.choice = ScanChoice::Keep;
-            if ov.current_index >= ov.findings.len() {
-                ov.done = true;
-            }
+            if ov.current_index >= ov.findings.len() { ov.done = true; }
         }
         KeyCode::Esc | KeyCode::Char('q') => { ov.done = true; }
         _ => {}
     }
 }
 
-// ─── Ignore Manager key handler ──────────────────────────────────────────────
+// ─── Ignore key handler ───────────────────────────────────────────────────────
 
 pub fn handle_ignore_key(ov: &mut IgnoreOverlay, key: KeyEvent) {
     let total_options = ov.items.len() + 2;
-
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => {
-            if ov.selected > 0 {
-                ov.selected -= 1;
-            } else {
-                ov.selected = total_options.saturating_sub(1);
-            }
+            if ov.selected > 0 { ov.selected -= 1; }
+            else { ov.selected = total_options.saturating_sub(1); }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             ov.selected = (ov.selected + 1) % total_options;
@@ -530,11 +611,8 @@ pub fn handle_ignore_key(ov: &mut IgnoreOverlay, key: KeyEvent) {
                 let id_to_remove = ov.items[ov.selected].short_id.clone();
                 crate::scanner::ignore::remove_by_short_id(&id_to_remove);
                 ov.items = crate::scanner::ignore::load_ignore_db().ignored;
-                if ov.items.is_empty() {
-                    ov.selected = 0;
-                } else if ov.selected >= ov.items.len() {
-                    ov.selected = ov.items.len().saturating_sub(1);
-                }
+                if ov.items.is_empty() { ov.selected = 0; }
+                else if ov.selected >= ov.items.len() { ov.selected = ov.items.len().saturating_sub(1); }
             } else if ov.selected == len {
                 crate::scanner::ignore::clear_all_silent();
                 ov.items.clear();
@@ -543,33 +621,247 @@ pub fn handle_ignore_key(ov: &mut IgnoreOverlay, key: KeyEvent) {
                 ov.done = true;
             }
         }
-        KeyCode::Esc | KeyCode::Char('q') => {
-            ov.items.clear();
-            ov.done = true;
-        }
+        KeyCode::Esc | KeyCode::Char('q') => { ov.items.clear(); ov.done = true; }
         _ => {}
     }
 }
 
+// ─── Info Overlay key handler ─────────────────────────────────────────────────
+
+pub fn handle_info_key(ov: &mut InfoOverlay, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => { ov.done = true; }
+        KeyCode::Up   | KeyCode::Char('k') => { if ov.scroll > 0 { ov.scroll -= 1; } }
+        KeyCode::Down | KeyCode::Char('j') => { ov.scroll += 1; }
+        KeyCode::PageUp   => { ov.scroll = ov.scroll.saturating_sub(10); }
+        KeyCode::PageDown => { ov.scroll += 10; }
+        _ => {}
+    }
+}
+
+// ─── Auth overlay key handler ─────────────────────────────────────────────────
+
+/// Called every tick so the overlay can check for OAuth poll results.
+/// Returns true if the overlay should close.
+pub fn auth_overlay_tick(ov: &mut AuthOverlay) -> bool {
+    // Advance spinner
+    if let AuthStep::Polling { ref mut frame, .. } = ov.step {
+        *frame = frame.wrapping_add(1);
+    }
+    // Check if background poll finished
+    if let Some(ref rx) = ov.poll_rx {
+        if let Ok(msg) = rx.try_recv() {
+            ov.poll_rx = None;
+            if msg == "__AUTH_SUCCESS__" {
+                ov.done = true; // close overlay immediately on success
+            } else {
+                ov.step = AuthStep::Result(msg); // show error
+            }
+        }
+    }
+    false
+}
+
+pub fn handle_auth_key(ov: &mut AuthOverlay, key: KeyEvent) -> bool {
+    match &ov.step.clone() {
+        AuthStep::Menu => match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => return true,
+            KeyCode::Up   | KeyCode::Char('k') => { if ov.selected > 0 { ov.selected -= 1; } }
+            KeyCode::Down | KeyCode::Char('j') => { if ov.selected < 2 { ov.selected += 1; } }
+            KeyCode::Enter => {
+                let sel = ov.selected;
+                match sel {
+                    0 => {
+                        // Step 1: get device code (fast, blocking ok)
+                        let info_result = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current().block_on(async {
+                                crate::auth::oauth::request_device_code().await
+                            })
+                        });
+                        match info_result {
+                            Err(e) => {
+                                ov.step = AuthStep::Result(format!("Error: {}", e));
+                            }
+                            Ok(info) => {
+                                let user_code = info.user_code.clone();
+                                let url = info.verification_uri.clone();
+                                let (tx, rx) = std::sync::mpsc::channel();
+                                tokio::task::spawn(async move {
+                                    // Count down 5 seconds before opening browser
+                                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                    let _ = open::that(&info.verification_uri);
+                                    let result = crate::auth::oauth::poll_for_token(&info).await;
+                                    match result {
+                                        Ok(token) => {
+                                            let save = crate::auth::token_store::save_token(&token);
+                                            let msg = match save {
+                                                Ok(_) => "__AUTH_SUCCESS__".to_string(),
+                                                Err(e) => format!("Error saving token: {}", e),
+                                            };
+                                            let _ = tx.send(msg);
+                                        }
+                                        Err(e) => { let _ = tx.send(format!("Error: {}", e)); }
+                                    }
+                                });
+                                ov.poll_rx = Some(rx);
+                                ov.step = AuthStep::ShowCode { user_code, url };
+                            }
+                        }
+                    }
+                    1 => {
+                        let msg = match crate::auth::token_store::delete_token() {
+                            Ok(_) => "Logged out. GitHub token removed.".to_string(),
+                            Err(e) => format!("Error: {}", e),
+                        };
+                        ov.step = AuthStep::Result(msg);
+                    }
+                    _ => {
+                        let msg = match crate::auth::token_store::load_token() {
+                            Ok(_) => "Authenticated ✔  — GitHub token is present.".to_string(),
+                            Err(_) => "Not authenticated. Run /auth login to connect.".to_string(),
+                        };
+                        ov.step = AuthStep::Result(msg);
+                    }
+                }
+            }
+            _ => {}
+        },
+        AuthStep::ShowCode { .. } => {
+            // Any key advances to polling display (code stays visible until done)
+            if let AuthStep::ShowCode { user_code, url } = ov.step.clone() {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        ov.poll_rx = None;
+                        return true;
+                    }
+                    _ => {
+                        ov.step = AuthStep::Polling { user_code, url, frame: 0 };
+                    }
+                }
+            }
+        }
+        AuthStep::Polling { .. } => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    ov.poll_rx = None;
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        AuthStep::Result(_) => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+// ─── PRP overlay key handler ──────────────────────────────────────────────────
+
+pub fn handle_prp_key(ov: &mut PrpOverlay, key: KeyEvent) -> bool {
+    match ov.step {
+        PrpStep::SelectRepos => match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => return true,
+            KeyCode::Up   | KeyCode::Char('k') => { if ov.selected > 0 { ov.selected -= 1; } }
+            KeyCode::Down | KeyCode::Char('j') => { if ov.selected + 1 < ov.repos.len() { ov.selected += 1; } }
+            KeyCode::Char(' ') => {
+                if let Some(b) = ov.included.get_mut(ov.selected) { *b = !*b; }
+            }
+            KeyCode::Enter => {
+                if ov.included.iter().any(|&b| b) {
+                    ov.step = PrpStep::EnterMessage;
+                    ov.input_buf.clear();
+                    ov.input_cursor = 0;
+                }
+            }
+            _ => {}
+        },
+        PrpStep::EnterMessage => match key.code {
+            KeyCode::Esc => { ov.step = PrpStep::SelectRepos; }
+            KeyCode::Enter => {
+                let msg = ov.input_buf.trim().to_string();
+                if !msg.is_empty() {
+                    let selected_repos: Vec<String> = ov.repos.iter().enumerate()
+                        .filter(|(i, _)| ov.included[*i])
+                        .map(|(_, n)| n.clone())
+                        .collect();
+                    ov.result_lines = run_prp_commit(selected_repos, &msg);
+                    ov.step = PrpStep::Result;
+                }
+            }
+            KeyCode::Backspace => {
+                if ov.input_cursor > 0 {
+                    ov.input_cursor -= 1;
+                    ov.input_buf.remove(ov.input_cursor);
+                }
+            }
+            KeyCode::Left  => { if ov.input_cursor > 0 { ov.input_cursor -= 1; } }
+            KeyCode::Right => { if ov.input_cursor < ov.input_buf.len() { ov.input_cursor += 1; } }
+            KeyCode::Char(c) => { ov.input_buf.insert(ov.input_cursor, c); ov.input_cursor += 1; }
+            _ => {}
+        },
+        PrpStep::Result => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn run_prp_commit(repos: Vec<String>, message: &str) -> Vec<String> {
+    let mut lines = vec![
+        "🔗 PRP Commit Session".to_string(),
+        "────────────────────────────────────".to_string(),
+        format!("Commit message: {}", message),
+        String::new(),
+    ];
+
+    for repo in &repos {
+        let _ = std::process::Command::new("git")
+            .args(["-C", repo, "add", "-A"])
+            .output();
+        let commit_out = std::process::Command::new("git")
+            .args(["-C", repo, "commit", "-m", message])
+            .output();
+
+        match commit_out {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                if out.status.success() {
+                    lines.push(format!("  ✔  {}", repo));
+                    if !stdout.is_empty() {
+                        lines.push(format!("     {}", stdout.lines().next().unwrap_or("")));
+                    }
+                } else {
+                    lines.push(format!("  ✖  {} — {}", repo, stderr.lines().next().unwrap_or("no changes")));
+                }
+            }
+            Err(_) => {
+                lines.push(format!("  ✖  {} — failed to run git", repo));
+            }
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Press Enter or Esc to close.".to_string());
+    lines
+}
+
 // ─── Planner key handler ──────────────────────────────────────────────────────
-//
-// Field progression mirrors ui.rs prompt_new_task / prompt_edit_task:
-//   Title  →(Enter/Tab)→  Tags  →(Enter/Tab)→  Description  →(Enter)→ commit
-//
-// We need to remember the value of each field as the user moves forward.
-// PlannerOverlay only has one input_buf, so we stash the completed fields in
-// a thread-local scratch pad (no struct changes needed).
 
 use std::cell::RefCell;
 
 thread_local! {
-    // (title, tags_raw, description_raw)
     static TASK_SCRATCH: RefCell<(String, String, String)> =
         RefCell::new((String::new(), String::new(), String::new()));
 }
 
-/// Called by planner_overlay.rs to read the saved field values for rendering
-/// inactive fields in the input modal.  Returns (title, tags, description).
 pub fn planner_scratch_peek() -> (String, String, String) {
     TASK_SCRATCH.with(|s| {
         let sc = s.borrow();
@@ -585,10 +877,7 @@ pub fn handle_planner_key(ov: &mut PlannerOverlay, key: KeyEvent) -> bool {
         Normal => match key.code {
             KeyCode::Esc | KeyCode::Char('q') => return true,
             KeyCode::Tab => {
-                ov.focus = match ov.focus {
-                    List => Detail,
-                    Detail => List,
-                };
+                ov.focus = match ov.focus { List => Detail, Detail => List };
             }
             KeyCode::Up | KeyCode::Char('k') if ov.focus == List => {
                 if ov.selected > 0 { ov.selected -= 1; }
@@ -619,7 +908,6 @@ pub fn handle_planner_key(ov: &mut PlannerOverlay, key: KeyEvent) -> bool {
                     let title = task.title.clone();
                     let tags  = task.tags.join(", ");
                     let desc  = task.description.clone().unwrap_or_default();
-                    // Pre-load all three into scratch; show title in input_buf first
                     TASK_SCRATCH.with(|s| *s.borrow_mut() = (title.clone(), tags, desc));
                     ov.input_buf = title;
                     ov.input_cursor = ov.input_buf.len();
@@ -649,42 +937,32 @@ pub fn handle_planner_key(ov: &mut PlannerOverlay, key: KeyEvent) -> bool {
                 ov.input_cursor = 0;
                 TASK_SCRATCH.with(|s| *s.borrow_mut() = (String::new(), String::new(), String::new()));
             }
-
             KeyCode::Enter | KeyCode::Tab => {
                 match ov.input_field {
-                    // ── Title field ──────────────────────────────────────────
                     InputField::Title => {
                         if !ov.input_buf.trim().is_empty() {
-                            // Save title, load tags into buf
                             let saved = ov.input_buf.clone();
                             TASK_SCRATCH.with(|s| {
                                 let mut sc = s.borrow_mut();
                                 sc.0 = saved;
-                                ov.input_buf = sc.1.clone(); // pre-fill tags (empty for add, existing for edit)
+                                ov.input_buf = sc.1.clone();
                             });
                             ov.input_cursor = ov.input_buf.len();
                             ov.input_field = InputField::Tags;
                         }
-                        // If title is empty, do nothing (keep focus on Title)
                     }
-
-                    // ── Tags field ───────────────────────────────────────────
                     InputField::Tags => {
-                        // Tags are optional, always advance
                         let saved = ov.input_buf.clone();
                         TASK_SCRATCH.with(|s| {
                             let mut sc = s.borrow_mut();
                             sc.1 = saved;
-                            ov.input_buf = sc.2.clone(); // pre-fill desc (empty for add, existing for edit)
+                            ov.input_buf = sc.2.clone();
                         });
                         ov.input_cursor = ov.input_buf.len();
                         ov.input_field = InputField::Description;
                     }
-
-                    // ── Description field ────────────────────────────────────
                     InputField::Description => {
                         if key.code == KeyCode::Tab {
-                            // Tab wraps back to Title
                             let saved = ov.input_buf.clone();
                             TASK_SCRATCH.with(|s| {
                                 let mut sc = s.borrow_mut();
@@ -694,26 +972,16 @@ pub fn handle_planner_key(ov: &mut PlannerOverlay, key: KeyEvent) -> bool {
                             ov.input_cursor = ov.input_buf.len();
                             ov.input_field = InputField::Title;
                         } else {
-                            // Enter — commit the task
                             let desc_val = ov.input_buf.trim().to_string();
                             TASK_SCRATCH.with(|s| s.borrow_mut().2 = desc_val);
-
                             TASK_SCRATCH.with(|s| {
                                 let sc = s.borrow();
                                 let title = sc.0.trim().to_string();
                                 if title.is_empty() { return; }
-
-                                let tags: Vec<String> = sc.1
-                                    .split(',')
+                                let tags: Vec<String> = sc.1.split(',')
                                     .map(|t| t.trim().to_string())
-                                    .filter(|t| !t.is_empty())
-                                    .collect();
-
-                                let description = {
-                                    let d = sc.2.trim().to_string();
-                                    if d.is_empty() { None } else { Some(d) }
-                                };
-
+                                    .filter(|t| !t.is_empty()).collect();
+                                let description = { let d = sc.2.trim().to_string(); if d.is_empty() { None } else { Some(d) } };
                                 if ov.mode == AddingTask {
                                     let mut task = Task::new(title);
                                     task.set_tags(tags);
@@ -725,28 +993,15 @@ pub fn handle_planner_key(ov: &mut PlannerOverlay, key: KeyEvent) -> bool {
                                     let old_title = task.title.clone();
                                     let old_desc  = task.description.clone();
                                     let old_tags  = task.tags.clone();
-                                    ov.history.push(crate::planner::history::Action::UpdateTitle {
-                                        id: task.id.clone(),
-                                        old_title,
-                                        new_title: title.clone(),
-                                    });
-                                    ov.history.push(crate::planner::history::Action::UpdateDescription {
-                                        id: task.id.clone(),
-                                        old_desc,
-                                        new_desc: description.clone(),
-                                    });
-                                    ov.history.push(crate::planner::history::Action::UpdateTags {
-                                        id: task.id.clone(),
-                                        old_tags,
-                                        new_tags: tags.clone(),
-                                    });
+                                    ov.history.push(crate::planner::history::Action::UpdateTitle { id: task.id.clone(), old_title, new_title: title.clone() });
+                                    ov.history.push(crate::planner::history::Action::UpdateDescription { id: task.id.clone(), old_desc, new_desc: description.clone() });
+                                    ov.history.push(crate::planner::history::Action::UpdateTags { id: task.id.clone(), old_tags, new_tags: tags.clone() });
                                     task.update_title(title);
                                     task.update_description(description);
                                     task.set_tags(tags);
                                 }
                                 ov.save();
                             });
-
                             ov.mode = Normal;
                             ov.input_buf.clear();
                             ov.input_cursor = 0;
@@ -755,23 +1010,12 @@ pub fn handle_planner_key(ov: &mut PlannerOverlay, key: KeyEvent) -> bool {
                     }
                 }
             }
-
             KeyCode::Backspace => {
-                if ov.input_cursor > 0 {
-                    ov.input_cursor -= 1;
-                    ov.input_buf.remove(ov.input_cursor);
-                }
+                if ov.input_cursor > 0 { ov.input_cursor -= 1; ov.input_buf.remove(ov.input_cursor); }
             }
-            KeyCode::Left => {
-                if ov.input_cursor > 0 { ov.input_cursor -= 1; }
-            }
-            KeyCode::Right => {
-                if ov.input_cursor < ov.input_buf.len() { ov.input_cursor += 1; }
-            }
-            KeyCode::Char(c) => {
-                ov.input_buf.insert(ov.input_cursor, c);
-                ov.input_cursor += 1;
-            }
+            KeyCode::Left  => { if ov.input_cursor > 0 { ov.input_cursor -= 1; } }
+            KeyCode::Right => { if ov.input_cursor < ov.input_buf.len() { ov.input_cursor += 1; } }
+            KeyCode::Char(c) => { ov.input_buf.insert(ov.input_cursor, c); ov.input_cursor += 1; }
             _ => {}
         },
 
@@ -779,10 +1023,7 @@ pub fn handle_planner_key(ov: &mut PlannerOverlay, key: KeyEvent) -> bool {
             KeyCode::Char('y') | KeyCode::Enter => {
                 if ov.selected < ov.tasks.len() {
                     let task = ov.tasks.remove(ov.selected);
-                    ov.history.push(crate::planner::history::Action::Delete {
-                        task,
-                        index: ov.selected,
-                    });
+                    ov.history.push(crate::planner::history::Action::Delete { task, index: ov.selected });
                     if ov.selected >= ov.tasks.len() && !ov.tasks.is_empty() {
                         ov.selected = ov.tasks.len() - 1;
                     }
@@ -798,11 +1039,8 @@ pub fn handle_planner_key(ov: &mut PlannerOverlay, key: KeyEvent) -> bool {
 
 fn clamp_scroll(ov: &mut PlannerOverlay) {
     let visible = 15usize;
-    if ov.selected < ov.scroll {
-        ov.scroll = ov.selected;
-    } else if ov.selected >= ov.scroll + visible {
-        ov.scroll = ov.selected - visible + 1;
-    }
+    if ov.selected < ov.scroll { ov.scroll = ov.selected; }
+    else if ov.selected >= ov.scroll + visible { ov.scroll = ov.selected - visible + 1; }
 }
 
 fn levenshtein(a: &str, b: &str) -> usize {

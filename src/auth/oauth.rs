@@ -1,12 +1,8 @@
-use open::that;
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
-use tokio::select;
-use tokio::io::{self, AsyncBufReadExt};
 
-// Client ID is baked in at compile time
 const CLIENT_ID: &str = env!("GITLINK_CLIENT_ID");
 
 #[derive(Deserialize, Debug)]
@@ -28,118 +24,79 @@ struct ErrorResponse {
     error: String,
 }
 
-pub async fn login() -> Result<String, Box<dyn std::error::Error>> {
+pub struct DeviceFlowInfo {
+    pub user_code: String,
+    pub verification_uri: String,
+    pub device_code: String,
+    pub interval: u64,
+    pub expires_in: u64,
+}
+
+/// Step 1: request a device code — no printing, returns data for the TUI overlay.
+pub async fn request_device_code() -> Result<DeviceFlowInfo, Box<dyn std::error::Error>> {
     let client = Client::new();
-
-    println!("🔐 Initiating GitHub Device Flow authentication...\n");
-
-    // Step 1: Request device + user code
-    let device_response = client
+    let resp = client
         .post("https://github.com/login/device/code")
         .header("Accept", "application/json")
         .header("User-Agent", "gitlink")
-        .form(&[
-            ("client_id", CLIENT_ID),
-            ("scope", "read:user repo"),
-        ])
+        .form(&[("client_id", CLIENT_ID), ("scope", "read:user repo")])
         .send()
         .await?;
+    let data: DeviceCodeResponse = resp.json().await?;
+    Ok(DeviceFlowInfo {
+        user_code: data.user_code,
+        verification_uri: data.verification_uri,
+        device_code: data.device_code,
+        interval: data.interval,
+        expires_in: data.expires_in,
+    })
+}
 
-    let device_data: DeviceCodeResponse = device_response.json().await?;
-
-    // Step 2: Display code clearly
-    println!("\n========================================");
-    println!("📋 Your verification code: {}", device_data.user_code);
-    println!("🌐 Verification URL: {}", device_data.verification_uri);
-    println!("========================================\n");
-
-    println!("Press Enter to open browser...");
-    println!("Opening browser in 8 seconds...\n");
-
-    let mut reader = io::BufReader::new(io::stdin());
-    let mut input = String::new();
-
-    // Countdown task
-    let countdown = async {
-        for i in (1..=8).rev() {
-            println!("Opening browser in {}...", i);
-            sleep(Duration::from_secs(1)).await;
-        }
-    };
-
-    // Wait for Enter
-    let enter_pressed = async {
-        let _ = reader.read_line(&mut input).await;
-    };
-
-    // Whichever happens first: countdown finishes OR Enter pressed
-    select! {
-        _ = countdown => {},
-        _ = enter_pressed => {
-            println!("Opening browser...");
-        }
-    }
-
-    // Open browser
-    that(&device_data.verification_uri)?;
-
-    println!("\nWaiting for authorization...\n");
-
-    // Step 3: Poll for access token
-    let mut interval = Duration::from_secs(device_data.interval);
-    let expires_at = Instant::now() + Duration::from_secs(device_data.expires_in);
+/// Step 2: poll until authorized or expired — no printing.
+pub async fn poll_for_token(info: &DeviceFlowInfo) -> Result<String, Box<dyn std::error::Error>> {
+    let client = Client::new();
+    let mut interval = Duration::from_secs(info.interval);
+    let expires_at = Instant::now() + Duration::from_secs(info.expires_in);
 
     loop {
         if Instant::now() > expires_at {
             return Err("Device code expired. Please try again.".into());
         }
-
         sleep(interval).await;
 
-        let token_response = client
+        let resp = client
             .post("https://github.com/login/oauth/access_token")
             .header("Accept", "application/json")
             .header("User-Agent", "gitlink")
             .form(&[
                 ("client_id", CLIENT_ID),
-                ("device_code", &device_data.device_code),
+                ("device_code", &info.device_code),
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ])
             .send()
             .await?;
 
-        let text = token_response.text().await?;
+        let text = resp.text().await?;
 
-        // Try parsing access token
-        if let Ok(token_res) = serde_json::from_str::<AccessTokenResponse>(&text) {
-            println!("✅ Authorization successful!");
-            return Ok(token_res.access_token);
+        if let Ok(t) = serde_json::from_str::<AccessTokenResponse>(&text) {
+            return Ok(t.access_token);
         }
-
-        // Try parsing error
-        if let Ok(error_res) = serde_json::from_str::<ErrorResponse>(&text) {
-            match error_res.error.as_str() {
-                "authorization_pending" => {
-                    print!("⏳ ");
-                    std::io::Write::flush(&mut std::io::stdout())?;
-                    continue;
-                }
-                "slow_down" => {
-                    interval += Duration::from_secs(5);
-                    continue;
-                }
-                "expired_token" => {
-                    return Err("Device code expired. Please try again.".into());
-                }
-                "access_denied" => {
-                    return Err("Authorization was denied by the user.".into());
-                }
-                _ => {
-                    return Err(format!("GitHub returned an error: {}", error_res.error).into());
-                }
+        if let Ok(e) = serde_json::from_str::<ErrorResponse>(&text) {
+            match e.error.as_str() {
+                "authorization_pending" => continue,
+                "slow_down" => { interval += Duration::from_secs(5); continue; }
+                "expired_token" => return Err("Device code expired.".into()),
+                "access_denied"  => return Err("Authorization denied by user.".into()),
+                other => return Err(format!("GitHub error: {}", other).into()),
             }
         }
-
-        return Err(format!("Unexpected response from GitHub: {}", text).into());
+        return Err(format!("Unexpected response: {}", text).into());
     }
+}
+
+/// Legacy combined login (kept for router compatibility).
+pub async fn login() -> Result<String, Box<dyn std::error::Error>> {
+    let info = request_device_code().await?;
+    let _ = open::that(&info.verification_uri);
+    poll_for_token(&info).await
 }

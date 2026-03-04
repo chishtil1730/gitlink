@@ -1,0 +1,594 @@
+/// Generic scrollable info overlay used by: activity, commits, pull-requests,
+/// repo-sync, multi-repo, push-check, push-verify, branches, issues, user-info,
+/// auth, and prp.
+///
+/// The caller fills `InfoOverlay::lines` with styled `ratatui::text::Line` values
+/// and sets a title string.  The overlay handles scrolling and the Esc/q/↑↓
+/// key bindings (handled in app.rs).
+
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+};
+
+pub fn draw(f: &mut Frame, ov: &crate::tui::app::InfoOverlay) {
+    let area = f.area();
+    let popup = centered_rect(92, 80, area);
+
+    f.render_widget(Clear, popup);
+
+    let accent = ov.accent;
+
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(60, 70, 90)))
+        .style(Style::default().bg(Color::Rgb(13, 15, 20)))
+        .title(Span::styled(
+            format!("  {}  ", ov.title),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ))
+        .title_alignment(Alignment::Left)
+        .title_bottom(Span::styled(
+            "  ↑↓ / PgUp PgDn  scroll    q / Esc  close  ",
+            Style::default().fg(Color::Rgb(80, 90, 110)),
+        ));
+
+    f.render_widget(outer, popup);
+
+    let inner = Rect {
+        x: popup.x + 2,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(4),
+        height: popup.height.saturating_sub(2),
+    };
+
+    let total = ov.lines.len() as u16;
+    let visible = inner.height;
+    let max_scroll = total.saturating_sub(visible);
+    let scroll = (ov.scroll as u16).min(max_scroll);
+
+    f.render_widget(
+        Paragraph::new(ov.lines.clone())
+            .scroll((scroll, 0))
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
+
+    // Scroll indicator in bottom-right corner of the border
+    if total > visible {
+        let pct = if max_scroll == 0 { 100 } else { (100 - (scroll * 100 / max_scroll)) as u16 };
+        let indicator = Paragraph::new(Line::from(Span::styled(
+            format!(" {}% ↕ ", pct),
+            Style::default().fg(Color::Rgb(80, 90, 110)),
+        )))
+            .alignment(Alignment::Right);
+
+        let ind_area = Rect {
+            x: popup.x,
+            y: popup.y + popup.height.saturating_sub(1),
+            width: popup.width.saturating_sub(2),
+            height: 1,
+        };
+        f.render_widget(indicator, ind_area);
+    }
+}
+
+// ── PRP overlay (two-panel: repo list + commit input) ───────────────────────
+
+pub fn draw_prp(f: &mut Frame, ov: &crate::tui::app::PrpOverlay) {
+    let area = f.area();
+    let popup = centered_rect(90, 82, area);
+
+    f.render_widget(Clear, popup);
+
+    let border_color = Color::Rgb(130, 90, 200);
+
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(60, 70, 90)))
+        .style(Style::default().bg(Color::Rgb(13, 15, 20)))
+        .title(Span::styled(
+            "  🔗 PRP Hub — Poly-Repo Commit Session  ",
+            Style::default().fg(border_color).add_modifier(Modifier::BOLD),
+        ))
+        .title_alignment(Alignment::Left)
+        .title_bottom(Span::styled(
+            "  ↑↓  select repo    Space  toggle    Enter  commit    Esc  close  ",
+            Style::default().fg(Color::Rgb(80, 90, 110)),
+        ));
+
+    f.render_widget(outer, popup);
+
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+
+    // Split: left repo list, right details/input
+    let panels = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(inner);
+
+    draw_prp_repo_list(f, ov, panels[0]);
+    draw_prp_detail(f, ov, panels[1]);
+}
+
+fn draw_prp_repo_list(f: &mut Frame, ov: &crate::tui::app::PrpOverlay, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(50, 55, 70)))
+        .style(Style::default().bg(Color::Rgb(13, 15, 20)))
+        .title(Span::styled(
+            "  Repositories  ",
+            Style::default().fg(Color::Rgb(130, 90, 200)).add_modifier(Modifier::BOLD),
+        ));
+
+    f.render_widget(block, area);
+
+    let list_area = Rect {
+        x: area.x + 2,
+        y: area.y + 1,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(2),
+    };
+
+    if ov.repos.is_empty() {
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "No git repositories found.",
+                    Style::default().fg(Color::Rgb(100, 100, 120)),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Run from a directory with git repos.",
+                    Style::default().fg(Color::Rgb(80, 85, 100)),
+                )),
+            ])
+                .alignment(Alignment::Center),
+            list_area,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = ov
+        .repos
+        .iter()
+        .enumerate()
+        .map(|(i, repo)| {
+            let is_sel = i == ov.selected;
+            let is_included = ov.included[i];
+
+            let pointer = if is_sel {
+                Span::styled("▶ ", Style::default().fg(Color::Rgb(130, 90, 200)))
+            } else {
+                Span::raw("  ")
+            };
+
+            let checkbox = if is_included {
+                Span::styled("☑ ", Style::default().fg(Color::Rgb(46, 160, 90)))
+            } else {
+                Span::styled("☐ ", Style::default().fg(Color::Rgb(80, 85, 100)))
+            };
+
+            let name_style = if is_sel {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else if is_included {
+                Style::default().fg(Color::Rgb(200, 205, 215))
+            } else {
+                Style::default().fg(Color::Rgb(80, 85, 100))
+            };
+
+            let bg = if is_sel {
+                Style::default().bg(Color::Rgb(30, 25, 45))
+            } else {
+                Style::default()
+            };
+
+            Line::from(vec![pointer, checkbox, Span::styled(repo.clone(), name_style)]).style(bg)
+        })
+        .collect();
+
+    f.render_widget(Paragraph::new(lines), list_area);
+}
+
+fn draw_prp_detail(f: &mut Frame, ov: &crate::tui::app::PrpOverlay, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(50, 55, 70)))
+        .style(Style::default().bg(Color::Rgb(16, 17, 22)))
+        .title(Span::styled(
+            "  Commit  ",
+            Style::default().fg(Color::Rgb(130, 90, 200)).add_modifier(Modifier::BOLD),
+        ));
+
+    f.render_widget(block, area);
+
+    let detail_area = Rect {
+        x: area.x + 2,
+        y: area.y + 2,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(3),
+    };
+
+    use crate::tui::app::PrpStep;
+    match ov.step {
+        PrpStep::SelectRepos => {
+            let included_count = ov.included.iter().filter(|&&b| b).count();
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Select repositories to include",
+                    Style::default().fg(Color::Rgb(180, 185, 210)).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Selected: ", Style::default().fg(Color::Rgb(100, 110, 130))),
+                    Span::styled(
+                        format!("{}/{}", included_count, ov.repos.len()),
+                        Style::default().fg(Color::Rgb(130, 90, 200)).add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Keybindings:",
+                    Style::default().fg(Color::Rgb(80, 85, 100)),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Space  ", Style::default().fg(Color::Rgb(130, 90, 200))),
+                    Span::styled("toggle repo", Style::default().fg(Color::Rgb(160, 165, 185))),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Enter  ", Style::default().fg(Color::Rgb(130, 90, 200))),
+                    Span::styled("proceed to commit message", Style::default().fg(Color::Rgb(160, 165, 185))),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Esc    ", Style::default().fg(Color::Rgb(130, 90, 200))),
+                    Span::styled("cancel session", Style::default().fg(Color::Rgb(160, 165, 185))),
+                ]),
+            ];
+            f.render_widget(Paragraph::new(lines), detail_area);
+        }
+
+        PrpStep::EnterMessage => {
+            let cursor = ov.input_cursor;
+            let buf = &ov.input_buf;
+            let before = &buf[..cursor];
+            let cursor_ch = buf.chars().nth(cursor).map(|c| c.to_string()).unwrap_or_else(|| " ".to_string());
+            let after_start = (cursor + cursor_ch.len()).min(buf.len());
+            let after = &buf[after_start..];
+
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Enter commit message:",
+                    Style::default().fg(Color::Rgb(180, 185, 210)).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled(before.to_string(), Style::default().fg(Color::White)),
+                    Span::styled(cursor_ch, Style::default().fg(Color::Black).bg(Color::Rgb(200, 180, 255))),
+                    Span::styled(after.to_string(), Style::default().fg(Color::White)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  ─────────────────────────────────────────",
+                    Style::default().fg(Color::Rgb(40, 45, 60)),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Enter  ", Style::default().fg(Color::Rgb(130, 90, 200))),
+                    Span::styled("confirm & commit", Style::default().fg(Color::Rgb(160, 165, 185))),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Esc    ", Style::default().fg(Color::Rgb(130, 90, 200))),
+                    Span::styled("back to repo selection", Style::default().fg(Color::Rgb(160, 165, 185))),
+                ]),
+            ];
+            f.render_widget(Paragraph::new(lines), detail_area);
+        }
+
+        PrpStep::Result => {
+            let lines: Vec<Line> = ov
+                .result_lines
+                .iter()
+                .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(Color::Rgb(200, 205, 220)))))
+                .collect();
+            f.render_widget(
+                Paragraph::new(lines).wrap(Wrap { trim: false }),
+                detail_area,
+            );
+        }
+    }
+}
+
+// ── Auth overlay ─────────────────────────────────────────────────────────────
+
+pub fn draw_auth(f: &mut Frame, ov: &crate::tui::app::AuthOverlay) {
+    use crate::tui::app::AuthStep;
+
+    let area = f.area();
+    let accent = Color::Rgb(80, 180, 120);
+
+    // ShowCode gets a larger popup so the code is prominent
+    let popup = match &ov.step {
+        AuthStep::ShowCode { .. } | AuthStep::Polling { .. } => centered_rect(78, 70, area),
+        _ => centered_rect(72, 60, area),
+    };
+
+    f.render_widget(Clear, popup);
+
+    let hint = match &ov.step {
+        AuthStep::Menu => "  ↑↓  select    Enter  confirm    Esc  close  ",
+        AuthStep::ShowCode { .. } => "  Opening browser in 5s…    Esc  cancel  ",
+        AuthStep::Polling { .. } => "  Waiting for authorization    Esc  cancel  ",
+        AuthStep::Result(_) => "  Enter / Esc  close  ",
+    };
+
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(60, 70, 90)))
+        .style(Style::default().bg(Color::Rgb(13, 15, 20)))
+        .title(Span::styled(
+            "  🔐 GitHub Authentication  ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ))
+        .title_alignment(Alignment::Left)
+        .title_bottom(Span::styled(
+            hint.to_string(),
+            Style::default().fg(Color::Rgb(80, 90, 110)),
+        ));
+
+    f.render_widget(outer, popup);
+
+    let inner = Rect {
+        x: popup.x + 2,
+        y: popup.y + 2,
+        width: popup.width.saturating_sub(4),
+        height: popup.height.saturating_sub(3),
+    };
+
+    match &ov.step {
+        AuthStep::Menu => {
+            let options = ["Login via GitHub OAuth", "Logout (remove token)", "Check auth status"];
+            let mut lines: Vec<Line> = vec![
+                Line::from(Span::styled(
+                    "Choose an action:",
+                    Style::default().fg(Color::Rgb(160, 165, 185)),
+                )),
+                Line::from(""),
+            ];
+            for (i, opt) in options.iter().enumerate() {
+                let is_sel = i == ov.selected;
+                let pointer = if is_sel {
+                    Span::styled("  ▶  ", Style::default().fg(accent))
+                } else {
+                    Span::raw("     ")
+                };
+                let style = if is_sel {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(Color::Rgb(20, 35, 28))
+                } else {
+                    Style::default().fg(Color::Rgb(160, 165, 185))
+                };
+                lines.push(Line::from(vec![pointer, Span::styled(opt.to_string(), style)]));
+                lines.push(Line::from(""));
+            }
+            f.render_widget(Paragraph::new(lines), inner);
+        }
+
+        AuthStep::ShowCode { user_code, url } => {
+            draw_auth_code_screen(f, inner, accent, user_code, url, None);
+        }
+
+        AuthStep::Polling { user_code, url, frame } => {
+            let frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+            let spinner = frames[frame % frames.len()];
+            draw_auth_code_screen(f, inner, accent, user_code, url, Some(spinner));
+        }
+
+        AuthStep::Result(msg) => {
+            let is_ok = !msg.starts_with("Error") && !msg.starts_with("Not");
+            let color = if is_ok { Color::Rgb(46, 160, 90) } else { Color::Rgb(200, 80, 80) };
+            let icon = if is_ok { "✔" } else { "✖" };
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("  {}  {}", icon, msg),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Press Enter or Esc to close.",
+                    Style::default().fg(Color::Rgb(80, 90, 110)),
+                )),
+            ];
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn big_char(c: char) -> [&'static str; 5] {
+    match c {
+        '0' => ["█████", "█   █", "█   █", "█   █", "█████"],
+        '1' => ["  ██ ", "   █ ", "   █ ", "   █ ", "█████"],
+        '2' => ["█████", "    █", "█████", "█    ", "█████"],
+        '3' => ["█████", "    █", " ████", "    █", "█████"],
+        '4' => ["█   █", "█   █", "█████", "    █", "    █"],
+        '5' => ["█████", "█    ", "█████", "    █", "█████"],
+        '6' => ["█████", "█    ", "█████", "█   █", "█████"],
+        '7' => ["█████", "    █", "   █ ", "  █  ", "  █  "],
+        '8' => ["█████", "█   █", "█████", "█   █", "█████"],
+        '9' => ["█████", "█   █", "█████", "    █", "█████"],
+        'A' => [" ███ ", "█   █", "█████", "█   █", "█   █"],
+        'B' => ["████ ", "█   █", "████ ", "█   █", "████ "],
+        'C' => ["█████", "█    ", "█    ", "█    ", "█████"],
+        'D' => ["████ ", "█   █", "█   █", "█   █", "████ "],
+        'E' => ["█████", "█    ", "████ ", "█    ", "█████"],
+        'F' => ["█████", "█    ", "████ ", "█    ", "█    "],
+        'G' => ["█████", "█    ", "█  ██", "█   █", "█████"],
+        'H' => ["█   █", "█   █", "█████", "█   █", "█   █"],
+        'I' => ["█████", "  █  ", "  █  ", "  █  ", "█████"],
+        'J' => ["█████", "    █", "    █", "█   █", " ████"],
+        'K' => ["█   █", "█  █ ", "███  ", "█  █ ", "█   █"],
+        'L' => ["█    ", "█    ", "█    ", "█    ", "█████"],
+        'M' => ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
+        'N' => ["█   █", "██  █", "█ █ █", "█  ██", "█   █"],
+        'O' => [" ███ ", "█   █", "█   █", "█   █", " ███ "],
+        'P' => ["████ ", "█   █", "████ ", "█    ", "█    "],
+        'Q' => [" ███ ", "█   █", "█ █ █", "█  ██", " ████"],
+        'R' => ["████ ", "█   █", "████ ", "█  █ ", "█   █"],
+        'S' => ["█████", "█    ", "█████", "    █", "█████"],
+        'T' => ["█████", "  █  ", "  █  ", "  █  ", "  █  "],
+        'U' => ["█   █", "█   █", "█   █", "█   █", "█████"],
+        'V' => ["█   █", "█   █", "█   █", " █ █ ", "  █  "],
+        'W' => ["█   █", "█   █", "█ █ █", "██ ██", "█   █"],
+        'X' => ["█   █", " █ █ ", "  █  ", " █ █ ", "█   █"],
+        'Y' => ["█   █", " █ █ ", "  █  ", "  █  ", "  █  "],
+        'Z' => ["█████", "   █ ", "  █  ", " █   ", "█████"],
+        '-' => ["     ", "     ", "█████", "     ", "     "],
+        ' ' => ["     ", "     ", "     ", "     ", "     "],
+        _   => ["     ", "  █  ", "     ", "  █  ", "     "],
+    }
+}
+
+fn render_big_text(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.to_uppercase().chars().collect();
+    let mut rows = vec![String::new(); 5];
+    for (i, ch) in chars.iter().enumerate() {
+        let glyph = big_char(*ch);
+        for row in 0..5 {
+            if i > 0 { rows[row].push(' '); }
+            rows[row].push_str(glyph[row]);
+        }
+    }
+    rows
+}
+
+fn draw_auth_code_screen(
+    f: &mut Frame,
+    inner: Rect,
+    accent: Color,
+    user_code: &str,
+    url: &str,
+    spinner: Option<&str>,
+) {
+    // Big text is 5 rows tall + 2 border = 7 for the code box
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1), // label
+            Constraint::Length(7), // code box (5 rows + top/bottom border)
+            Constraint::Length(1),
+            Constraint::Length(1), // url
+            Constraint::Length(1),
+            Constraint::Min(0),    // status
+        ])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "Enter this code at the URL below:",
+            Style::default().fg(Color::Rgb(160, 165, 185)),
+        )),
+        chunks[1],
+    );
+
+    let code_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent).add_modifier(Modifier::BOLD))
+        .style(Style::default().bg(Color::Rgb(18, 28, 22)));
+    f.render_widget(code_block, chunks[2]);
+
+    let code_inner = Rect {
+        x: chunks[2].x + 1,
+        y: chunks[2].y + 1,
+        width: chunks[2].width.saturating_sub(2),
+        height: 5,
+    };
+
+    let big_rows = render_big_text(user_code);
+    let lines: Vec<Line> = big_rows
+        .iter()
+        .map(|row| {
+            Line::from(Span::styled(
+                row.clone(),
+                Style::default()
+                    .fg(Color::Rgb(80, 255, 140))
+                    .add_modifier(Modifier::BOLD),
+            ))
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center),
+        code_inner,
+    );
+
+    if !url.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  URL: ", Style::default().fg(Color::Rgb(110, 115, 130))),
+                Span::styled(
+                    url.to_string(),
+                    Style::default().fg(Color::Rgb(100, 149, 237)).add_modifier(Modifier::UNDERLINED),
+                ),
+            ])),
+            chunks[4],
+        );
+    }
+
+    let status_line = match spinner {
+        None => Line::from(Span::styled(
+            "  Browser will open in 5 seconds. Authorize in the browser to continue.",
+            Style::default().fg(Color::Rgb(160, 165, 185)),
+        )),
+        Some(s) => Line::from(vec![
+            Span::styled(
+                format!("  {} ", s),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Waiting for authorization…",
+                Style::default().fg(Color::Rgb(160, 165, 185)),
+            ),
+        ]),
+    };
+    f.render_widget(Paragraph::new(status_line), chunks[6]);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let v = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(v[1])[1]
+}
