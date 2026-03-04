@@ -9,13 +9,12 @@ branches: ["main"]
 env:
 CARGO_TERM_COLOR: always
 GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
-GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
 
 jobs:
 build:
 runs-on: ubuntu-latest
-
-```
+  
+  ```
 steps:
   - name: Checkout repo
     uses: actions/checkout@v4
@@ -37,4 +36,4 @@ steps:
 
   - name: Check formatting
     run: cargo fmt --all -- --check
-```
+  ```
