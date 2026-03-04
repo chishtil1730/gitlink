@@ -6,6 +6,22 @@ use std::path::Path;
 
 const IGNORE_FILE: &str = ".gitlinkignore.json";
 
+pub const IGNORED_DIRS: &[&str] = &[
+    ".git", "target", "node_modules", ".idea", ".vscode", "dist", "build",
+    "out", ".next", ".nuxt", ".cache", "__pycache__", ".venv", "venv",
+    "env", ".mypy_cache", ".pytest_cache", "coverage", ".gradle",
+    ".terraform", ".serverless",
+];
+
+pub const IGNORED_EXTENSIONS: &[&str] = &[
+    "exe", "dll", "so", "dylib", "bin", "o", "a", "class", "jar",
+    "png", "jpg", "jpeg", "gif", "pdf", "zip", "tar", "gz",
+];
+
+pub const IGNORED_FILES: &[&str] = &[
+    "Cargo.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+];
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IgnoredItem {
     pub fingerprint: String,
@@ -118,27 +134,63 @@ pub fn remove_by_short_id(short_id: &str) {
 
 pub fn ensure_gitignore_entry() {
     let gitignore_path = ".gitignore";
-    let entry = ".gitlinkignore.json";
 
-    // Read existing content if file exists
-    let mut existing = String::new();
+    // 1. Collect all items we want to ensure are in .gitignore
+    let mut entries_to_add = Vec::new();
 
-    if let Ok(mut file) = fs::File::open(gitignore_path) {
-        let _ = file.read_to_string(&mut existing);
+    // Always include the database file itself
+    entries_to_add.push(".gitlinkignore.json");
+
+    // Add directories (suffixed with / for gitignore best practice)
+    for dir in IGNORED_DIRS {
+        entries_to_add.push(dir);
     }
 
-    // If already present → do nothing
-    if existing.lines().any(|line| line.trim() == entry) {
-        return;
+    // Add specific files
+    for file in IGNORED_FILES {
+        entries_to_add.push(file);
     }
 
-    // Otherwise append
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(gitignore_path)
-    {
-        // Add a newline before our entry to ensure it's on a new line
-        let _ = writeln!(file, "\n# GitLink ignore database\n{}", entry);
+    // Add extensions (formatted as *.ext)
+    let formatted_exts: Vec<String> = IGNORED_EXTENSIONS
+        .iter()
+        .map(|ext| format!("*.{}", ext))
+        .collect();
+
+    // 2. Read existing .gitignore content to avoid duplicates
+    let mut existing_lines = Vec::new();
+    if let Ok(content) = fs::read_to_string(gitignore_path) {
+        existing_lines = content.lines().map(|l| l.trim().to_string()).collect();
+    }
+
+    // 3. Filter out what's already there
+    let new_entries: Vec<&str> = entries_to_add
+        .into_iter()
+        .filter(|entry| !existing_lines.contains(&entry.to_string()))
+        .collect();
+
+    let new_exts: Vec<&str> = formatted_exts
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|entry| !existing_lines.contains(&entry.to_string()))
+        .collect();
+
+    // 4. If there's anything new to add, append it
+    if !new_entries.is_empty() || !new_exts.is_empty() {
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(gitignore_path)
+        {
+            // Add a header for clarity
+            let _ = writeln!(file, "\n# GitLink Auto-Ignored Items");
+
+            for entry in new_entries {
+                let _ = writeln!(file, "{}", entry);
+            }
+            for ext in new_exts {
+                let _ = writeln!(file, "{}", ext);
+            }
+        }
     }
 }

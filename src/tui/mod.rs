@@ -121,7 +121,7 @@ fn run_loop(
 
             let (tx, rx) = mpsc::channel::<MultiSyncMsg>();
             pending_multi_sync = Some(rx);
-            tokio::task::spawn_blocking(move || {
+            std::thread::spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run_multi_sync_check(selected)
                 }));
@@ -216,7 +216,7 @@ fn run_loop(
 
                         "show-activity" => {
                             let (tx, rx) = mpsc::channel();
-                            tokio::task::spawn_blocking(move || {
+                            std::thread::spawn(move || {
                                 let output = router::execute("/show-activity");
                                 let _ = tx.send(output);
                             });
@@ -227,7 +227,7 @@ fn run_loop(
 
                         "commits" => {
                             let (tx, rx) = mpsc::channel::<OutputBlock>();
-                            tokio::task::spawn_blocking(move || {
+                            std::thread::spawn(move || {
                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| router::execute("/commits")));
                                 let output = result.unwrap_or_else(|_| crate::tui::app::OutputBlock {
                                     kind: crate::tui::app::OutputKind::Error,
@@ -242,7 +242,7 @@ fn run_loop(
 
                         "pull-requests" => {
                             let (tx, rx) = mpsc::channel::<OutputBlock>();
-                            tokio::task::spawn_blocking(move || {
+                            std::thread::spawn(move || {
                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| router::execute("/pull-requests")));
                                 let output = result.unwrap_or_else(|_| crate::tui::app::OutputBlock {
                                     kind: crate::tui::app::OutputKind::Error,
@@ -257,7 +257,7 @@ fn run_loop(
 
                         "repo-sync" => {
                             let (tx, rx) = mpsc::channel::<OutputBlock>();
-                            tokio::task::spawn_blocking(move || {
+                            std::thread::spawn(move || {
                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| router::execute("/repo-sync")));
                                 let output = result.unwrap_or_else(|_| crate::tui::app::OutputBlock {
                                     kind: crate::tui::app::OutputKind::Error,
@@ -278,7 +278,7 @@ fn run_loop(
                             });
                             let (tx, rx) = mpsc::channel::<MultiSyncMsg>();
                             pending_multi_sync = Some(rx);
-                            tokio::task::spawn_blocking(move || {
+                            std::thread::spawn(move || {
                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(fetch_repos_for_multi_sync));
                                 match result {
                                     Ok(Ok(repos))  => { let _ = tx.send(MultiSyncMsg::RepoList(repos)); }
@@ -290,7 +290,7 @@ fn run_loop(
 
                         "push-check" => {
                             let (tx, rx) = mpsc::channel::<OutputBlock>();
-                            tokio::task::spawn_blocking(move || {
+                            std::thread::spawn(move || {
                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| router::execute("/push-check")));
                                 let output = result.unwrap_or_else(|_| crate::tui::app::OutputBlock {
                                     kind: crate::tui::app::OutputKind::Error,
@@ -305,7 +305,7 @@ fn run_loop(
 
                         "push-verify" => {
                             let (tx, rx) = mpsc::channel::<OutputBlock>();
-                            tokio::task::spawn_blocking(move || {
+                            std::thread::spawn(move || {
                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| router::execute("/push-verify")));
                                 let output = result.unwrap_or_else(|_| crate::tui::app::OutputBlock {
                                     kind: crate::tui::app::OutputKind::Error,
@@ -320,7 +320,7 @@ fn run_loop(
 
                         "branches" => {
                             let (tx, rx) = mpsc::channel::<OutputBlock>();
-                            tokio::task::spawn_blocking(move || {
+                            std::thread::spawn(move || {
                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| router::execute("/branches")));
                                 let output = result.unwrap_or_else(|_| crate::tui::app::OutputBlock {
                                     kind: crate::tui::app::OutputKind::Error,
@@ -335,7 +335,7 @@ fn run_loop(
 
                         "issues" => {
                             let (tx, rx) = mpsc::channel::<OutputBlock>();
-                            tokio::task::spawn_blocking(move || {
+                            std::thread::spawn(move || {
                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| router::execute("/issues")));
                                 let output = result.unwrap_or_else(|_| crate::tui::app::OutputBlock {
                                     kind: crate::tui::app::OutputKind::Error,
@@ -350,7 +350,7 @@ fn run_loop(
 
                         "user-info" => {
                             let (tx, rx) = mpsc::channel::<OutputBlock>();
-                            tokio::task::spawn_blocking(move || {
+                            std::thread::spawn(move || {
                                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| router::execute("/user-info")));
                                 let output = result.unwrap_or_else(|_| crate::tui::app::OutputBlock {
                                     kind: crate::tui::app::OutputKind::Error,
@@ -372,7 +372,7 @@ fn run_loop(
                         _ => {
                             let (tx, rx) = mpsc::channel();
                             let cmd_owned = cmd.clone();
-                            tokio::task::spawn_blocking(move || {
+                            std::thread::spawn(move || {
                                 let output = router::execute(&cmd_owned);
                                 let _ = tx.send(output);
                             });

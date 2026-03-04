@@ -9,10 +9,57 @@ use git2::{ObjectType, Repository};
 
 use crate::scanner::patterns::PATTERNS;
 use crate::scanner::report::Finding;
+use crate::scanner::filters::{IGNORED_DIRS, IGNORED_EXTENSIONS, IGNORED_FILES, IGNORED_PATH_SEGMENTS};
 
 const MAX_FILE_SIZE: u64 = 2_000_000; // 2MB
 const ENTROPY_THRESHOLD: f64 = 4.3;
 const MIN_SECRET_LENGTH: usize = 20;
+
+fn should_skip_path(path: &Path) -> bool {
+    // Check every component against ignored dirs and path segments
+    for component in path.components() {
+        if let std::path::Component::Normal(s) = component {
+            let s = s.to_string_lossy();
+            if IGNORED_DIRS.iter().any(|&d| s == d) {
+                return true;
+            }
+            if IGNORED_PATH_SEGMENTS.iter().any(|&seg| s == seg) {
+                return true;
+            }
+        }
+    }
+    // Fallback: check the full path string for dir separators around ignored names.
+    // Handles edge cases on Windows where component parsing may differ.
+    let path_str = path.to_string_lossy();
+    let path_normalized = path_str.replace('\\', "/");
+    for dir in IGNORED_DIRS {
+        if path_normalized.contains(&format!("/{}/", dir))
+            || path_normalized.starts_with(&format!("{}/", dir))
+        {
+            return true;
+        }
+    }
+    for seg in IGNORED_PATH_SEGMENTS {
+        if path_normalized.contains(&format!("/{}/", seg)) {
+            return true;
+        }
+    }
+    // Check exact filename
+    if let Some(name) = path.file_name() {
+        let name = name.to_string_lossy();
+        if IGNORED_FILES.iter().any(|&f| name == f) {
+            return true;
+        }
+    }
+    // Check extension
+    if let Some(ext) = path.extension() {
+        let ext = ext.to_string_lossy().to_lowercase();
+        if IGNORED_EXTENSIONS.iter().any(|&e| ext == e) {
+            return true;
+        }
+    }
+    false
+}
 
 pub fn scan_directory(root: &str) -> Vec<Finding> {
     let files: Vec<PathBuf> = WalkBuilder::new(root)
@@ -21,6 +68,7 @@ pub fn scan_directory(root: &str) -> Vec<Finding> {
         .build()
         .filter_map(Result::ok)
         .filter(|e| e.path().is_file())
+        .filter(|e| !should_skip_path(e.path()))
         .map(|e| e.into_path())
         .collect();
 
@@ -30,6 +78,11 @@ pub fn scan_directory(root: &str) -> Vec<Finding> {
 fn scan_file(path: &Path) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+
+    // Skip paths that match known artifact/false-positive patterns
+    if should_skip_path(path) {
+        return findings;
+    }
 
     // Skip large files
     if let Ok(metadata) = fs::metadata(path) {
