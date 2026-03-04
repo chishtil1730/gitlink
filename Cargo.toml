@@ -1,6 +1,6 @@
 [package]
 name = "gitlink"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Terminal GitHub companion — sync status, commits, PRs, secret scanner, task planner and more"
 authors = ["Barakh Chishti <catterpi1432@gmail.com>"]
