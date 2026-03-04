@@ -1,20 +1,20 @@
-name: Release
+name: Release macOS
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch: # Allows you to run this manually from the Actions tab
 
 jobs:
-  build:
+  release:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build Binary
+      - name: Build
         run: cargo build --release
-      - name: Package
-        run: |
-          tar -czvf gitlink-macos.tar.gz -C target/release gitlink
-      - name: Upload to Release
-        uses: softprops/action-gh-release@v1
+        env:
+          GITLINK_CLIENT_ID: ${{ secrets.GITLINK_CLIENT_ID }}
+      - name: Archive
+        run: tar -czvf gitlink-macos.tar.gz -C target/release gitlink
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: gitlink-macos.tar.gz
+          name: macos-binary
+          path: gitlink-macos.tar.gz
