@@ -1369,7 +1369,12 @@ pub fn handle_multi_sync_key(ov: &mut MultiSyncOverlay, key: KeyEvent) -> bool {
                     ov.search.pop();
                     ov.cursor = 0;
                 }
-                KeyCode::Char(c) if ov.search_active => {
+                KeyCode::Char('/') if ov.search_active => {
+                    ov.search_active = false;
+                    ov.search.clear();
+                    ov.cursor = 0;
+                }
+                KeyCode::Char(c) if ov.search_active && c != ' ' => {
                     ov.search.push(c);
                     ov.cursor = 0;
                 }
