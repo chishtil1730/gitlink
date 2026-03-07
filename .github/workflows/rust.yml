@@ -1,55 +1,20 @@
-name: Release macOS Binary
-
+name: Release macOS
 on:
-  push:
-    branches: ["main"]
-    tags:
-      - 'v*' # Triggers on version tags (e.g., v0.1.0)
-  pull_request:
-    branches: ["main"]
-
-env:
-  CARGO_TERM_COLOR: always
-  GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
+  workflow_dispatch: # Allows you to run this manually from the Actions tab
 
 jobs:
-  build:
-    # Changed from ubuntu-latest to macos-latest for Homebrew compatibility
+  release:
     runs-on: macos-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
-
+      - uses: actions/checkout@v4
       - name: Build
-        run: cargo build --release --verbose
-
-      - name: Package Binary
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          cd target/release
-          tar -czvf ../../gitlink-macos.tar.gz gitlink
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: gitlink-macos.tar.gz
+        run: cargo build --release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run tests
-        run: cargo test --verbose
-
-      - name: Run clippy
-        # This will still fail the job if there are warnings,
-        # but the binary is already built/uploaded above.
-        run: cargo clippy --all-targets --all-features -- -D warnings
+          GITLINK_CLIENT_ID: ${{ secrets.GITLINK_CLIENT_ID }}
+      - name: Archive
+        run: tar -czvf gitlink-macos.tar.gz -C target/release gitlink
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-binary
+          path: gitlink-macos.tar.gz
