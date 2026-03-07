@@ -18,3 +18,4 @@ jobs:
         with:
           name: macos-binary
           path: gitlink-macos.tar.gz
+

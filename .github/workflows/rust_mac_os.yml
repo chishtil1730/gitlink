@@ -1,20 +1,52 @@
-name: Release macOS
+name: Release
+
 on:
-  workflow_dispatch: # Allows you to run this manually from the Actions tab
+  push:
+    tags:
+      - 'v*' # Triggers on v0.1.0, v1.2.3, etc.
 
 jobs:
   release:
+    name: Build and Release
     runs-on: macos-latest
+    permissions:
+      contents: write
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: cargo build --release
-        env:
-          GITLINK_CLIENT_ID: ${{ secrets.GITLINK_CLIENT_ID }}
-      - name: Archive
-        run: tar -czvf gitlink-macos.tar.gz -C target/release gitlink
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          name: macos-binary
-          path: gitlink-macos.tar.gz
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+
+      - name: Build Intel Binary
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Build Apple Silicon Binary
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Create Universal Binary
+        run: |
+          mkdir -p target/universal-macos
+          lipo -create \
+            target/x86_64-apple-darwin/release/gitlink \
+            target/aarch64-apple-darwin/release/gitlink \
+            -output target/universal-macos/gitlink
+          
+          # Package it as a .tar.gz (required for Homebrew)
+          cd target/universal-macos
+          tar -czf gitlink-macos-universal.tar.gz gitlink
+
+      - name: Generate SHA256
+        run: shasum -a 256 target/universal-macos/gitlink-macos-universal.tar.gz > target/universal-macos/gitlink-macos-universal.tar.gz.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/universal-macos/gitlink-macos-universal.tar.gz
+            target/universal-macos/gitlink-macos-universal.tar.gz.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
