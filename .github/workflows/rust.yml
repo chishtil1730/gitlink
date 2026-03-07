@@ -30,7 +30,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install OpenSSL
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
+
       - name: Build x86_64
+        env:
+          X86_64_APPLE_DARWIN_OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
+          OPENSSL_NO_VENDOR: 1
         run: cargo build --release --target x86_64-apple-darwin
 
       - name: Build aarch64
