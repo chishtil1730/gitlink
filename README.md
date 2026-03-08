@@ -10,12 +10,16 @@
 
 <br/>
 
-<img src="gitlink_tui/task_plan.png" width="49%" alt="GitLink task planner"/>
+<img src="gitlink_tui/gitlink_home.png" width="85%" alt="GitLink home screen"/>
+
+<br/><br/>
+
 <img src="gitlink_tui/activity_checks.png" width="49%" alt="GitLink activity checks"/>
+<img src="gitlink_tui/recent_commits.png" width="49%" alt="GitLink recent commits"/>
 
 <br/>
 
-<img src="gitlink_tui/gitlink_home.png" width="70%" alt="GitLink home screen"/>
+<img src="gitlink_tui/task_plan.png" width="70%" alt="GitLink task planner"/>
 
 <br/>
 
