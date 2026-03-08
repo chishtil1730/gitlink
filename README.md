@@ -1,13 +1,12 @@
 <div align="center">
 
-# GitLink
+<img src="gitlink_tui/gitlink_logo.png" width="39%" alt="GitLink"/>
 
 **A fast, keyboard-driven terminal companion for GitHub — built in Rust.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/chishtil1730/gitlink)](https://github.com/chishtil1730/gitlink/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](#installation)
-
 <br/>
 
 <img src="gitlink_tui/gitlink_home.png" width="85%" alt="GitLink home screen"/>
