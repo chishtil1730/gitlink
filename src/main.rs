@@ -5,8 +5,9 @@ mod planner;
 mod prp_hub;
 mod scanner;
 mod tui;
-///added action for mac os binary
-fn main() {
+
+#[tokio::main]
+async fn main() {
     if let Err(e) = tui::run() {
         eprintln!("GitLink crashed: {}", e);
     }
