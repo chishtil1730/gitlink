@@ -8,6 +8,17 @@
 [![Release](https://img.shields.io/github/v/release/chishtil1730/gitlink)](https://github.com/chishtil1730/gitlink/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](#installation)
 
+<br/>
+
+<img src="gitlink_tui/task_plan.png" width="49%" alt="GitLink task planner"/>
+<img src="gitlink_tui/activity_checks.png" width="49%" alt="GitLink activity checks"/>
+
+<br/>
+
+<img src="gitlink_tui/gitlink_home.png" width="70%" alt="GitLink home screen"/>
+
+<br/>
+
 </div>
 
 ---
@@ -27,18 +38,19 @@ brew install gitlink
 ### Windows
 
 Download `gitlink.exe` from the [Releases](https://github.com/chishtil1730/gitlink/releases) page, or run:
+
 ```sh
 curl -L https://github.com/chishtil1730/gitlink/releases/download/v0.1.1/gitlink.exe -o gitlink.exe
 .\gitlink.exe
 ```
 
 ### Build from Source
+
 **Requirements:** Rust 1.75+
 
 ```sh
 git clone https://github.com/chishtil1730/gitlink
 cd gitlink
-
 cargo build --release
 ./target/release/gitlink
 ```
@@ -126,9 +138,6 @@ GitHub OAuth device flow — no PAT required. Run `/auth`, open a URL, approve. 
 | System keychain | GitHub OAuth token |
 
 ---
-
-
-
 
 ## License
 
