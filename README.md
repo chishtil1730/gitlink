@@ -9,16 +9,16 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](#installation)
 <br/>
 
-<img src="gitlink_tui/gitlink_home.png" width="85%" alt="GitLink home screen"/>
-
-<br/><br/>
-
-<img src="gitlink_tui/activity_checks.png" width="49%" alt="GitLink activity checks"/>
-<img src="gitlink_tui/recent_commits.png" width="49%" alt="GitLink recent commits"/>
+<img src="gitlink_tui/activity_checks.png" width="85%" alt="GitLink activity checks"/>
 
 <br/>
 
-<img src="gitlink_tui/task_plan.png" width="70%" alt="GitLink task planner"/>
+<img src="gitlink_tui/gitlink_home.png" width="49%" alt="GitLink home screen"/>
+<img src="gitlink_tui/task_plan.png" width="49%" alt="GitLink task planner"/>
+
+<br/>
+
+<img src="gitlink_tui/recent_commits.png" width="85%" alt="GitLink recent commits"/>
 
 <br/>
 
